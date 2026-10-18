@@ -1,0 +1,222 @@
+import {spawn} from "node:child_process";
+import {readFile, mkdir, access, unlink} from "node:fs/promises";
+import {resolve} from "node:path";
+import {sleep, validatedCallback} from "./core.mjs";
+import {validateBrowserMode} from "./browser-mode.mjs";
+import {prepareBirthday} from "./birthday.mjs";
+
+export async function launchBrowser(profile, proxy = "", headless = false, mode = "incognito") {
+  validateBrowserMode(mode);
+  const paths = ["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Google/Chrome/Application/chrome.exe"];
+  let executable;
+  for (const path of paths) {try {await access(path); executable = path; break;} catch {}}
+  if (!executable) throw new Error("没有找到 Edge / Chrome，请安装浏览器或调整 browser.mjs 的程序路径。");
+  await mkdir(profile, {recursive: true});
+  await unlink(resolve(profile, "DevToolsActivePort")).catch(error => {if (error.code !== "ENOENT") throw error;});
+  const args = ["--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-background-mode", "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--disable-extensions"];
+  if (headless) args.push("--headless=new");
+  if (proxy) args.push("--proxy-server=" + proxy, "--proxy-bypass-list=localhost;127.0.0.1;[::1]");
+  args.push("about:blank");
+  const child = spawn(executable, args, {windowsHide: headless, stdio: "ignore"});
+  let spawnError;
+  child.on("error", error => {spawnError = error;});
+  let active;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (spawnError || child.exitCode !== null) throw new Error("无法启动浏览器；请确认该账号的脚本浏览器窗口已关闭。");
+    try {active = await readFile(resolve(profile, "DevToolsActivePort"), "utf8"); break;} catch {}
+    await sleep(100);
+  }
+  if (!active) {child.kill(); throw new Error("浏览器未启动或调试端口不可用。");}
+  const [port, path] = active.trim().split(/\r?\n/);
+  const socket = new WebSocket("ws://127.0.0.1:" + port + path);
+  try {
+    await new Promise((ok, reject) => {
+      const timer = setTimeout(() => reject(new Error("timeout")), 10000);
+      socket.addEventListener("open", () => {clearTimeout(timer); ok();}, {once: true});
+      socket.addEventListener("error", () => {clearTimeout(timer); reject(new Error("connection"));}, {once: true});
+    });
+  } catch {
+    socket.close(); child.kill();
+    throw new Error("无法连接本机浏览器调试端口，请关闭该账号的脚本浏览器后重试。");
+  }
+  const pending = new Map();
+  const listeners = new Set();
+  let id = 0;
+  socket.addEventListener("message", event => {
+    const message = JSON.parse(event.data);
+    if (message.id && pending.has(message.id)) {
+      const item = pending.get(message.id);
+      pending.delete(message.id); clearTimeout(item.timer);
+      if (message.error) item.reject(new Error("浏览器操作失败，请在可见浏览器中检查当前页面。")); else item.ok(message.result);
+    } else for (const listener of listeners) listener(message);
+  });
+  socket.addEventListener("close", () => {for (const item of pending.values()) {clearTimeout(item.timer); item.reject(new Error("浏览器已关闭。"));} pending.clear();});
+  const send = (method, params = {}, sessionId) => new Promise((ok, reject) => {
+    const current = ++id;
+    const timer = setTimeout(() => {pending.delete(current); reject(new Error("浏览器操作超时。"));}, 10000);
+    pending.set(current, {ok, reject, timer});
+    try {socket.send(JSON.stringify({id: current, method, params, ...(sessionId ? {sessionId} : {})}));}
+    catch {clearTimeout(timer); pending.delete(current); reject(new Error("浏览器连接已中断。"));}
+  });
+  let closing;
+  return {
+    send, listeners, mode,
+    async evaluate(sessionId, expression) {
+      const result = await send("Runtime.evaluate", {expression, awaitPromise: true, returnByValue: true}, sessionId);
+      if (result.exceptionDetails) throw new Error("当前页面暂时无法操作，请在浏览器检查。");
+      return result.result.value;
+    },
+    async close() {
+      if (closing) return closing;
+      closing = (async () => {
+      const exited = new Promise(ok => {
+        if (child.exitCode !== null || child.signalCode !== null) ok();
+        else child.once("exit", ok);
+      });
+      try {await send("Browser.close");} catch {}
+      socket.close();
+      let timer;
+      await Promise.race([exited, new Promise(ok => {timer = setTimeout(ok, 30000);})]);
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) {
+        if (mode === "normal") {
+          child.unref();
+          throw new Error("普通浏览器仍在关闭并保存资料，请手动关闭本次脚本浏览器，再继续队列。");
+        }
+        child.kill();
+      }
+      })();
+      return closing;
+    },
+  };
+}
+
+export async function newAccountPage(browser, expectedState) {
+  const mode = validateBrowserMode(browser.mode ?? "incognito");
+  const browserContextId = mode === "incognito" ? (await browser.send("Target.createBrowserContext")).browserContextId : undefined;
+  let targetId;
+  try {({targetId} = await browser.send("Target.createTarget", {url: "about:blank", ...(browserContextId ? {browserContextId} : {})}));}
+  catch (error) {
+    if (browserContextId) await browser.send("Target.disposeBrowserContext", {browserContextId}).catch(() => {});
+    throw error;
+  }
+  const {sessionId} = await browser.send("Target.attachToTarget", {targetId, flatten: true});
+  let callback = null;
+  let callbackError = null;
+  const listener = message => {
+    if (message.sessionId !== sessionId || message.method !== "Fetch.requestPaused") return;
+    void (async () => {
+      const {requestId, request} = message.params;
+      if (!request.url.startsWith("https://platform.openai.com/auth/callback")) return;
+      // This happens at Request stage, before Platform can receive/redeem the code.
+      await browser.send("Fetch.failRequest", {requestId, errorReason: "Aborted"}, sessionId);
+      try {callback = validatedCallback(request.url, expectedState);} catch (error) {callbackError = error;}
+    })().catch(() => {callbackError = new Error("回调拦截失败，队列已暂停。");});
+  };
+  browser.listeners.add(listener);
+  await browser.send("Fetch.enable", {patterns: [{urlPattern: "https://platform.openai.com/auth/callback*", requestStage: "Request", resourceType: "Document"}]}, sessionId);
+  return {
+    sessionId,
+    get callback() {if (callbackError) throw callbackError; return callback;},
+    async navigate(url) {return browser.send("Page.navigate", {url}, sessionId);},
+    async step(job, code = "") {
+      const birthday = await prepareBirthday(browser, sessionId, job);
+      if (birthday.kind === "unsupported") return {kind: "manual-profile"};
+      return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + "," + JSON.stringify(birthday.fields?.map(f => f.index) || []) + ")");
+    },
+    async close() {
+      browser.listeners.delete(listener);
+      try {
+        if (browserContextId) await browser.send("Target.disposeBrowserContext", {browserContextId});
+        else await browser.send("Target.closeTarget", {targetId});
+      } catch {}
+    },
+  };
+}
+
+// Conservative form adapter. Unknown pages remain visible for the user to handle.
+export function formStep(job, code, birthdayIndices = []) {
+  if (location.href === "about:blank" || document.readyState === "loading") return {kind: "loading"};
+  if (location.hostname !== "auth.openai.com") return {kind: "manual"};
+  if (!window.__cg2TouchedInputs) {
+    window.__cg2TouchedInputs = new WeakSet();
+    document.addEventListener("input", event => {if (event.isTrusted) window.__cg2TouchedInputs.add(event.target);}, true);
+  }
+  const visible = element => !!element && !element.disabled && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+  const inputs = [...document.querySelectorAll("input")].filter(visible);
+  const birthdayElements = new Set([...document.querySelectorAll('input,select,[role="spinbutton"]')].filter((e, i) => birthdayIndices.includes(i)));
+  const text = (document.body?.innerText || "").slice(0, 10000);
+  if (inputs.some(x => x.type === "tel" && /phone|mobile|手机|电话/i.test(x.name + " " + x.placeholder)) || /电话号码是必填项|phone number is required|verify your phone|短信|WhatsApp/i.test(text) || [...document.querySelectorAll("iframe")].some(x => visible(x) && /captcha|challenge/i.test(x.src))) return {kind: "manual-verification"};
+  const label = element => [element.name, element.id, element.autocomplete, element.placeholder, element.getAttribute("aria-label"), ...[...(element.labels || [])].map(x => x.textContent)].filter(Boolean).join(" ").toLowerCase();
+  const fill = (element, value) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(element, value);
+    element.dispatchEvent(new Event("input", {bubbles: true}));
+    element.dispatchEvent(new Event("change", {bubbles: true}));
+  };
+  const clickContinue = () => {
+    const buttons = [...document.querySelectorAll("button,input[type=submit]")].filter(visible);
+    const button = buttons.find(x => /^(continue|next|submit|create account|sign up|allow|authorize|accept|继续|下一步|提交|注册|创建账户|创建账号|同意|授权)(\s|$)/i.test((x.innerText || x.value || "").trim()));
+    if (button) {button.click(); return true;}
+    return false;
+  };
+  const codeInputs = inputs.filter(x => x.autocomplete === "one-time-code" || /\b(otp|code|verification.code)\b|验证码/.test(label(x)) || (x.maxLength === 1 && x.inputMode === "numeric"));
+  if (codeInputs.length) {
+    const previousAuto = window.__cg2LastAutoOtp;
+    const sameAuto = previousAuto && codeInputs.length === previousAuto.inputs.length && codeInputs.every((input, i) => input === previousAuto.inputs[i] && input.value === previousAuto.values[i]);
+    if (codeInputs.some(x => window.__cg2TouchedInputs.has(x)) || (codeInputs.some(x => x.value.trim()) && !sameAuto)) return {kind: "otp-manual"};
+    if (!code) return {kind: sameAuto ? "otp-waiting" : "otp"};
+    if (codeInputs.length === 1) fill(codeInputs[0], code);
+    else if (codeInputs.length === 6 && codeInputs.every(x => x.maxLength === 1)) codeInputs.forEach((x, i) => fill(x, code[i]));
+    else return {kind: "manual"};
+    window.__cg2LastAutoOtp = {inputs: codeInputs, values: codeInputs.map(x => x.value)};
+    clickContinue(); return {kind: "otp-submitted"};
+  }
+  const signup = [...document.querySelectorAll("a")].find(x => visible(x) && /^(sign up|create account|注册|请注册|创建账号|创建账户)$/i.test(x.innerText.trim()));
+  if (signup && !/signup|sign-up|create.account/i.test(location.pathname) && !window.__cg2SignupClicked) {
+    window.__cg2SignupClicked = true; signup.click(); return {kind: "signup"};
+  }
+  const key = location.pathname + "|" + inputs.map(x => x.type + ":" + x.name + ":" + x.placeholder).join("|");
+  if (window.__cg2LastFill === key) return {kind: "waiting"};
+  let filled = 0;
+  let unknown = 0;
+  const [year, month, day] = job.birth_date.split("-");
+  for (const input of inputs) {
+    if (birthdayElements.has(input)) continue;
+    if (["hidden", "submit", "button", "checkbox", "radio"].includes(input.type) || input.readOnly) continue;
+    const name = label(input);
+    let value;
+    if (input.type === "email" || /\bemail\b|邮箱|电子邮件/.test(name)) value = job.email;
+    else if (input.type === "password") value = job.password;
+    else if (/\bage\b|年龄/.test(name)) value = String(job.age);
+    else if (input.type === "date") value = job.birth_date;
+    else if (/birth|\bdob\b|生日|出生日期/.test(name)) {
+      if (/yyyy-mm-dd/i.test(input.placeholder)) value = job.birth_date;
+      else if (/mm.?dd.?yyyy/i.test(input.placeholder)) value = `${month}/${day}/${year}`;
+      else {unknown++; continue;}
+    } else if (/\byear\b|出生年|年份/.test(name)) value = year;
+    else if (/\bmonth\b|月份/.test(name)) value = String(Number(month));
+    else if (/\bday\b|日期|日份/.test(name)) value = String(Number(day));
+    else if (/\b(given.name|first.name)\b/.test(name)) value = job.name.split(" ")[0];
+    else if (/\b(family.name|last.name)\b/.test(name)) value = job.name.split(" ").slice(1).join(" ");
+    else if (/\b(name|full.name)\b|姓名|名字/.test(name)) value = job.name;
+    else if (!input.value) {unknown++; continue;}
+    if (value !== undefined) {fill(input, value); filled++;}
+  }
+  for (const select of [...document.querySelectorAll("select")].filter(visible)) {
+    if (birthdayElements.has(select)) continue;
+    const name = label(select);
+    const number = /\byear\b|年份/.test(name) ? Number(year) : /\bmonth\b|月份/.test(name) ? Number(month) : /\bday\b|日期/.test(name) ? Number(day) : null;
+    const option = number === null ? null : [...select.options].find(x => x.value !== "" && Number(x.value) === number);
+    if (!option) {unknown++; continue;}
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, option.value);
+    select.dispatchEvent(new Event("input", {bubbles: true}));
+    select.dispatchEvent(new Event("change", {bubbles: true}));
+    filled++;
+  }
+  if (unknown || [...document.querySelectorAll('[role="spinbutton"]:not(input)')].some(e => visible(e) && !birthdayElements.has(e))) return {kind: "manual-profile"};
+  if (filled || birthdayIndices.length || !inputs.length) {
+    if (clickContinue()) {window.__cg2LastFill = key; return {kind: "advanced"};}
+  }
+  return {kind: "manual"};
+}

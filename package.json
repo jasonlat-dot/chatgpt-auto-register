@@ -1,0 +1,17 @@
+{
+  "name": "chatgpt-auto-register",
+  "version": "1.0.0",
+  "description": "Windows browser queue companion for chatgpt2api v1.8.0 with Platform OAuth callback patch",
+  "type": "module",
+  "engines": {
+    "node": ">=24.5.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jasonlat-dot/chatgpt-auto-register.git"
+  }
+}

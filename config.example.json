@@ -1,0 +1,9 @@
+{
+  "api_base_url": "http://127.0.0.1:3000",
+  "proxy": "",
+  "google_client_file": "credentials.json",
+  "sender_domains": [
+    "openai.com"
+  ],
+  "auto_code_wait_seconds": 60
+}

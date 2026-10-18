@@ -1,0 +1,62 @@
+# Local configuration and Google OAuth client downloads
+/config.json
+/config.*.json
+!/config.example.json
+credentials*.json
+client_secret*.json
+*credentials*.json
+*token*.json
+.env
+.env.*
+!.env.example
+
+# Accounts, plaintext passwords, sessions, cookies and complete browser profiles
+.local/
+accounts*.txt
+!accounts.example.txt
+account-credentials.json
+status.json
+last-run-summary.json
+browser-settings.json
+browser-profile*/
+browser-profiles/
+*browser-fixture-*/
+*browser-test-*/
+Cookies
+Cookies-journal
+Local State
+DevToolsActivePort
+*.session.json
+*.session
+*.jsonl
+*.har
+
+# Generated reports, backups, databases and archives
+logs/
+screenshots/
+artifacts/
+outputs/
+backups/
+.oauth-*-backup-*/
+*.log
+*.tmp
+*.tmp-*
+*.bak
+*.backup
+*.db
+*.db-*
+*.sqlite*
+*.csv
+*.zip
+*.tar
+*.tar.gz
+
+# Dependencies and local editor/OS files
+node_modules/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

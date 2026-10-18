@@ -1,0 +1,2 @@
+# 复制为 accounts.txt，替换成自己的真实域名邮箱。每行一个；# 开头的注释会忽略。
+first@your-domain.example
