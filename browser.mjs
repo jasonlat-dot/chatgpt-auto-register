@@ -4,6 +4,7 @@ import {resolve} from "node:path";
 import {sleep, validatedCallback} from "./core.mjs";
 import {validateBrowserMode} from "./browser-mode.mjs";
 import {prepareBirthday} from "./birthday.mjs";
+import {browserSessionProbe, sessionLandingStep} from "./session-import.mjs";
 
 export async function launchBrowser(profile, proxy = "", headless = false, mode = "incognito") {
   validateBrowserMode(mode);
@@ -91,7 +92,7 @@ export async function launchBrowser(profile, proxy = "", headless = false, mode 
   };
 }
 
-export async function newAccountPage(browser, expectedState) {
+export async function newAccountPage(browser, expectedState, {sessionImport = false} = {}) {
   const mode = validateBrowserMode(browser.mode ?? "incognito");
   const browserContextId = mode === "incognito" ? (await browser.send("Target.createBrowserContext")).browserContextId : undefined;
   let targetId;
@@ -113,16 +114,26 @@ export async function newAccountPage(browser, expectedState) {
       try {callback = validatedCallback(request.url, expectedState);} catch (error) {callbackError = error;}
     })().catch(() => {callbackError = new Error("回调拦截失败，队列已暂停。");});
   };
-  browser.listeners.add(listener);
-  await browser.send("Fetch.enable", {patterns: [{urlPattern: "https://platform.openai.com/auth/callback*", requestStage: "Request", resourceType: "Document"}]}, sessionId);
+  if (!sessionImport) {
+    browser.listeners.add(listener);
+    await browser.send("Fetch.enable", {patterns: [{urlPattern: "https://platform.openai.com/auth/callback*", requestStage: "Request", resourceType: "Document"}]}, sessionId);
+  }
   return {
     sessionId,
     get callback() {if (callbackError) throw callbackError; return callback;},
     async navigate(url) {return browser.send("Page.navigate", {url}, sessionId);},
+    async readSession() {
+      if (!sessionImport) throw new Error("当前页面未启用 Session 导入。");
+      return browser.evaluate(sessionId, "(" + browserSessionProbe.toString() + ")()");
+    },
     async step(job, code = "") {
+      if (sessionImport) {
+        const origin = await browser.evaluate(sessionId, "location.origin");
+        if (origin !== "https://auth.openai.com") return browser.evaluate(sessionId, "(" + sessionLandingStep.toString() + ")()");
+      }
       const birthday = await prepareBirthday(browser, sessionId, job);
       if (birthday.kind === "unsupported") return {kind: "manual-profile"};
-      return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + "," + JSON.stringify(birthday.fields?.map(f => f.index) || []) + ")");
+      return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + "," + JSON.stringify(birthday.fields?.map(f => f.index) || []) + "," + JSON.stringify({preferLogin: sessionImport}) + ")");
     },
     async close() {
       browser.listeners.delete(listener);
@@ -135,7 +146,7 @@ export async function newAccountPage(browser, expectedState) {
 }
 
 // Conservative form adapter. Unknown pages remain visible for the user to handle.
-export function formStep(job, code, birthdayIndices = []) {
+export function formStep(job, code, birthdayIndices = [], {preferLogin = false} = {}) {
   if (location.href === "about:blank" || document.readyState === "loading") return {kind: "loading"};
   if (location.hostname !== "auth.openai.com") return {kind: "manual"};
   if (!window.__cg2TouchedInputs) {
@@ -173,7 +184,7 @@ export function formStep(job, code, birthdayIndices = []) {
     clickContinue(); return {kind: "otp-submitted"};
   }
   const signup = [...document.querySelectorAll("a")].find(x => visible(x) && /^(sign up|create account|注册|请注册|创建账号|创建账户)$/i.test(x.innerText.trim()));
-  if (signup && !/signup|sign-up|create.account/i.test(location.pathname) && !window.__cg2SignupClicked) {
+  if (!preferLogin && signup && !/signup|sign-up|create.account/i.test(location.pathname) && !window.__cg2SignupClicked) {
     window.__cg2SignupClicked = true; signup.click(); return {kind: "signup"};
   }
   const key = location.pathname + "|" + inputs.map(x => x.type + ":" + x.name + ":" + x.placeholder).join("|");

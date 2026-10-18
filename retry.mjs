@@ -2,7 +2,7 @@ import {normalizeEmail} from "./core.mjs";
 
 export function statusInfo(status) {
   return ({
-    pending: {label: "待处理", retry: "pending", action: "选择 3 或 4 开始处理"},
+    pending: {label: "待处理", retry: "pending", action: "选择 3 / 4 / 9 开始处理"},
     stopped: {label: "已停止 / 失败", retry: "safe", action: "先排查停止或失败原因，再用菜单 8 重新排队"},
     skipped: {label: "已跳过", retry: "safe", action: "先处理跳过原因，再用菜单 8 重新排队"},
     in_progress: {label: "上次处理中断", retry: "review", action: "先核对后端账号池；确认未入库后用菜单 8 重新排队"},

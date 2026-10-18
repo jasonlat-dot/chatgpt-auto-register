@@ -1,5 +1,5 @@
 ﻿param(
-  [ValidateSet('Menu', 'Gmail', 'Plan', 'Queue', 'Manual', 'Retry', 'CleanLock', 'Generate', 'Browser', 'RetryMenu')]
+  [ValidateSet('Menu', 'Gmail', 'Plan', 'Queue', 'Manual', 'Retry', 'CleanLock', 'Generate', 'Browser', 'RetryMenu', 'Session')]
   [string]$Mode = 'Menu',
   [string]$Email = '',
   [string]$Count = '',
@@ -14,7 +14,7 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::InputEncoding = $OutputEncoding
 Set-Location -LiteralPath $PSScriptRoot
 if ($Mode -eq 'Menu') {
-  $taskMenuModes = @{ '1' = 'Gmail'; '2' = 'Plan'; '3' = 'Queue'; '4' = 'Manual'; '5' = 'CleanLock'; '6' = 'Generate'; '7' = 'Browser'; '8' = 'RetryMenu' }
+  $taskMenuModes = @{ '1' = 'Gmail'; '2' = 'Plan'; '3' = 'Queue'; '4' = 'Manual'; '5' = 'CleanLock'; '6' = 'Generate'; '7' = 'Browser'; '8' = 'RetryMenu'; '9' = 'Session' }
   while ($true) {
     Write-Host 'ChatGPT2API - Windows 账号注册队列'
     Write-Host '自动模式遇到人工验证、未知表单或取码失败直接跳过；结束后汇总结果。'
@@ -37,12 +37,13 @@ if ($Mode -eq 'Menu') {
     }
     Write-Host "7. 选择浏览器模式：普通 / 无痕（当前：$taskBrowserLabel）"
     Write-Host '8. 查看失败 / 已停止 / 跳过账号，重新排队'
+    Write-Host '9. Session JSON 自动导入：登录 ChatGPT 后读取并导入'
     Write-Host '0. 退出程序'
     Write-Host ''
-    $taskMenuSelection = (Read-Host '请输入选项 0 到 8，然后按回车').Trim()
+    $taskMenuSelection = (Read-Host '请输入选项 0 到 9，然后按回车').Trim()
     if ($taskMenuSelection -eq '0') { break }
     if (-not $taskMenuModes.ContainsKey($taskMenuSelection)) {
-      Write-Host '选项无效，请输入 0 到 8。' -ForegroundColor Yellow
+      Write-Host '选项无效，请输入 0 到 9。' -ForegroundColor Yellow
       continue
     }
     try {
@@ -151,7 +152,7 @@ try {
       $taskRetryView = ($taskRetryJson -join "`n") | ConvertFrom-Json
       $taskRetryRows = @($taskRetryView.items | Where-Object { $_.retry -in @('safe', 'review') })
       if ($taskRetryRows.Count -eq 0) {
-        Write-Host '没有需要重新排队的账号。待处理账号可直接选择 3 或 4。'
+        Write-Host '没有需要重新排队的账号。待处理账号可直接选择 3 / 4 / 9。'
         return
       }
       Write-Host '以下账号没有自动重试。清理锁不会改变这些状态。'
@@ -180,7 +181,7 @@ try {
         & $taskNode.Source './runner.mjs' --retry $taskRetrySelected.email @taskRetryArgs
       }
     }
-    { $_ -in @('Queue', 'Manual') } {
+    { $_ -in @('Queue', 'Manual', 'Session') } {
       $taskPreflightJson = & $taskNode.Source './runner.mjs' --queue-status --json
       if ($LASTEXITCODE -ne 0) { throw '读取队列状态失败，请查看上方错误。' }
       $taskPreflightView = ($taskPreflightJson -join "`n") | ConvertFrom-Json
@@ -215,11 +216,10 @@ try {
           continue
         }
         if ($taskAuthResult -ne 0) { throw '无法验证后端密钥。请检查服务地址、网络或上方提示；未将网络错误当作密钥错误。' }
-        if ($Mode -eq 'Manual') {
-          & $taskNode.Source --use-env-proxy './runner.mjs' --run --manual-codes @taskBrowserArgs
-        } else {
-          & $taskNode.Source --use-env-proxy './runner.mjs' --run @taskBrowserArgs
-        }
+        $taskRunArgs = @('--run')
+        if ($Mode -eq 'Manual') { $taskRunArgs += '--manual-codes' }
+        if ($Mode -eq 'Session') { $taskRunArgs += '--session-import' }
+        & $taskNode.Source --use-env-proxy './runner.mjs' @taskRunArgs @taskBrowserArgs
         $taskQueueResult = $LASTEXITCODE
         if ($taskQueueResult -in @(23, 24)) {
           Write-Host '运行中后端密钥失效，请更新密钥后继续；兑换结果待核对的账号不会自动重试。' -ForegroundColor Yellow

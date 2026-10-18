@@ -1,7 +1,7 @@
 {
   "name": "chatgpt-auto-register",
   "version": "1.0.0",
-  "description": "Windows browser queue companion for chatgpt2api v1.8.0 with Platform OAuth callback patch",
+  "description": "Windows browser queue companion for chatgpt2api v1.8.0 with OAuth and Session JSON import modes",
   "type": "module",
   "engines": {
     "node": ">=24.5.0"

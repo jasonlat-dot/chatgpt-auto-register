@@ -18,3 +18,5 @@
 只在自己控制的 Windows 用户目录和域名邮箱上运行。遇到人工验证时自动模式会跳过，不会自动解决手机验证或人机验证。账号和服务的使用仍由相关服务商规则决定。
 
 本项目未设置第三方遥测。Gmail 请求只发往 Google；OAuth/注册访问 OpenAI；导入请求发往你在 `config.json` 中配置的 chatgpt2api 后端。自动化服务端管理员密钥可保存于本机被 Git 忽略的 `config.json` 的 `chatgpt2api_admin_key` 字段，运行时也会放入子进程环境。用户新输入只有在管理员认证通过后才写入配置；程序不在终端或运行摘要中输出密钥。
+
+Session JSON 模式只从脚本浏览器的 `https://chatgpt.com` 同源会话接口读取当前账号，并在导入前核对邮箱。完整 Session、accessToken 以及后端返回的账号列表不保存到日志、状态或文件；只传给本地配置的 chatgpt2api 后端。普通模式的 Cookie 仍随浏览器资料保存在本机。

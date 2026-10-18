@@ -13,9 +13,12 @@ node validation/browser-fixture.mjs
 node validation/browser-storage-check.mjs
 node validation/unattended-browser-check.mjs
 node validation/birthday-browser-check.mjs
+node validation/session-browser-check.mjs
 ```
 
 这些验证使用本机独立浏览器配置和合成页面。生日验证覆盖：默认当天日期、原生 `date`、`YYYY/MM/DD` 和 `MM/DD/YYYY` 文本框、类似 React Aria 的分段编辑，以及受控值 / 隐藏日期不一致时拒绝提交。
+
+Session 验证在普通和无痕的独立浏览器上下文中完成合成登录、验证码、同源 Session 读取及模拟后端导入；测试标签页的所有请求均本地拦截，不登录真实服务。`test/session-import.test.mjs` 另覆盖错账号、过期、重复导入、提交后结果未知和敏感信息裁剪。
 
 模拟页面验证不能代替真实 OpenAI 页面验证。改动表单适配器时应保留提交前的生日校验，避免把不认识的输入控件当作填写成功。新页面无法识别时，自动模式记录原因并继续队列；不要自动绕过验证或盲目重复兑换 code。
 

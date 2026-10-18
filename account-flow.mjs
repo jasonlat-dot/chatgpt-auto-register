@@ -6,7 +6,7 @@ export function manualReason(kind) {
   return ({"manual-verification": "页面要求手机验证或人机验证", "manual-profile": "注册资料表单需要人工填写", "otp-manual": "验证码已被手工填写，需要人工提交", manual: "页面无法自动处理，需要人工操作"})[kind];
 }
 
-export async function driveAccount({page, job, reader, guard, used, started, finish, signal, automatic = true, notify = console.log, now = Date.now, pause = sleep}) {
+export async function driveAccount({page, job, reader, guard, used, started, finish, signal, automatic = true, notify = console.log, now = Date.now, pause = sleep, readCompletion = () => page.callback, flowLabel = "OAuth", mailFailureOnOtpOnly = false}) {
   const deadline = Math.min(guard.since + 540000, now() + (Number(started.expires_in || 600) - 30) * 1000);
   let previousKind;
   let kindSince = now();
@@ -16,9 +16,10 @@ export async function driveAccount({page, job, reader, guard, used, started, fin
   const skip = reason => ({skipped: true, reason});
   try {
     while (now() < deadline && !signal?.aborted) {
-      if (page.callback) {
+      const completion = await readCompletion();
+      if (completion) {
         submitted = true;
-        const result = await finish(page.callback);
+        const result = await finish(completion);
         if (!Number.isInteger(result.added) || !Number.isInteger(result.skipped) || result.added < 0 || result.skipped < 0 || result.added + result.skipped < 1) throw new Error("后端未确认账号已入库，请检查账号池；当前邮箱保留在待处理文件中。");
         return {warning: !!result.errors?.length};
       }
@@ -43,7 +44,8 @@ export async function driveAccount({page, job, reader, guard, used, started, fin
       if (automatic && ["waiting", "advanced", "signup", "loading", "otp-waiting"].includes(step.kind) && now() - kindSince >= 45000) return skip("页面长时间没有进展，需要人工检查");
       if (!automatic && step.kind === "otp-manual") reader.useManual("检测到手工输入验证码。");
       const failureReason = reader.pendingFailure;
-      const choice = await resolveCodeFailure(reader, {email: job.email, signal, skipManual: automatic});
+      const choice = !mailFailureOnOtpOnly || ["otp", "otp-waiting"].includes(step.kind)
+        ? await resolveCodeFailure(reader, {email: job.email, signal, skipManual: automatic}) : "continue";
       if (choice === "stop") throw new Error("用户已停止当前任务。");
       if (choice === "skip") return skip(failureReason || "自动取码不可用");
       if (!["otp", "otp-waiting"].includes(step.kind)) reader.resetWait();
@@ -64,8 +66,8 @@ export async function driveAccount({page, job, reader, guard, used, started, fin
       await pause(800);
     }
     if (signal?.aborted) throw new Error("用户已停止当前任务。");
-    if (automatic) return skip("当前 OAuth 会话即将过期，未自动完成");
-    throw new Error("当前 OAuth 会话即将过期，队列已暂停。");
+    if (automatic) return skip(`当前 ${flowLabel} 会话即将过期，未自动完成`);
+    throw new Error(`当前 ${flowLabel} 会话即将过期，队列已暂停。`);
   } catch (error) {error.submitted = submitted; throw error;}
 }
 

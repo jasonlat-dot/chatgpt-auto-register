@@ -10,6 +10,7 @@ import {launchBrowser, newAccountPage} from "./browser.mjs";
 import {driveAccount, summarizeRun, printSummary} from "./account-flow.mjs";
 import {profileForAccount, readBrowserMode, saveBrowserMode} from "./browser-mode.mjs";
 import {ADMIN_AUTH_EXIT, ADMIN_KEY_MISSING_EXIT, adminAuthError, apiBase, configuredAdminKey, saveAdminKey, verifyAdminKey} from "./admin-auth.mjs";
+import {driveSessionAccount} from "./session-import.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const local = resolve(root, ".local");
@@ -44,7 +45,7 @@ async function main() {
     if (process.argv.includes("--set-browser-mode")) {
       const mode = process.argv[process.argv.indexOf("--set-browser-mode") + 1];
       await saveBrowserMode(local, mode);
-      console.log("已设置浏览器模式：" + (mode === "normal" ? "普通窗口（按邮箱保存登录状态）" : "无痕窗口（账号结束后销毁会话）") + "。下次选择 3 或 4 时生效。");
+      console.log("已设置浏览器模式：" + (mode === "normal" ? "普通窗口（按邮箱保存登录状态）" : "无痕窗口（账号结束后销毁会话）") + "。下次选择 3 / 4 / 9 时生效。");
       return;
     }
     const statusFile = resolve(local, "status.json");
@@ -59,9 +60,9 @@ async function main() {
       }
       const result = planRetry(queue.emails, state, {email: process.argv[process.argv.indexOf("--retry") + 1], allSafe: process.argv.includes("--retry-all-safe"), confirmedNotImported: process.argv.includes("--confirm-not-imported")}, queue.completed);
       if (result.changed.length) await saveJSON(statusFile, result.state);
-      console.log(result.changed.length ? `已将 ${result.changed.length} 个账号重新排队；复用已有资料，下次生成新的 OAuth 会话。` : "没有需要变更的账号；待处理账号可直接运行 3 或 4。");
+      console.log(result.changed.length ? `已将 ${result.changed.length} 个账号重新排队；复用已有资料，下次重新登录 / 授权。` : "没有需要变更的账号；待处理账号可直接运行 3 / 4 / 9。");
       if (result.review_count && process.argv.includes("--retry-all-safe")) console.log(`另有 ${result.review_count} 个账号需要先核对后端账号池，本次未变更。`);
-      console.log("这里只修改排队状态，不立即注册。回到菜单选择 3 或 4 开始。");
+      console.log("这里只修改排队状态，不立即登录或注册。回到菜单选择 3 / 4 / 9 开始。");
       return;
     }
     const credentialsFile = resolve(local, "account-credentials.json");
@@ -110,10 +111,12 @@ async function main() {
       catch (error) {if ([401, 403].includes(error.status)) throw adminAuthError(); throw error;}
     };
     const automatic = !process.argv.includes("--manual-codes");
+    const sessionImport = process.argv.includes("--session-import");
     const reader = new CodeReader(gmail, {manual: !automatic, failurePolicy: automatic ? "skip" : "dialog", waitSeconds: config.auto_code_wait_seconds ?? 60});
     const gmailProfile = await reader.connect();
     if (gmailProfile) console.log("接码 Gmail：" + gmailProfile.emailAddress);
     console.log("并发数固定为 1。注册资料、密码保存于 .local/account-credentials.json。Ctrl+C 停止队列。");
+    console.log("导入方式：" + (sessionImport ? "Session JSON（登录 ChatGPT 后读取，仅导入 accessToken）" : "OAuth（获取可续期凭据）") + "。");
     const modeIndex = process.argv.indexOf("--browser-mode");
     const browserMode = await readBrowserMode(local, modeIndex < 0 ? undefined : process.argv[modeIndex + 1] || "");
     console.log("浏览器模式：" + (browserMode === "normal" ? "普通窗口；每个邮箱使用自己的浏览器资料。" : "无痕窗口；每个账号使用全新会话。"));
@@ -129,12 +132,12 @@ async function main() {
         // Snapshot before opening an authorization page, so pre-existing messages cannot be used.
         const guard = await reader.begin(email, used, config.sender_domains || ["openai.com"]);
         const initialReason = reader.pendingFailure;
-        const initialChoice = await resolveCodeFailure(reader, {email, signal: stopController.signal, skipManual: automatic});
+        const initialChoice = sessionImport ? "continue" : await resolveCodeFailure(reader, {email, signal: stopController.signal, skipManual: automatic});
         if (initialChoice === "stop") throw new Error("用户已停止当前任务。");
         if (initialChoice === "skip") {console.log("已跳过：" + email); return {skipped: true, reason: initialReason || "自动取码不可用"};}
-        const started = await api("/api/accounts/oauth/start", {email_hint: email});
+        const started = sessionImport ? {expires_in: 600} : await api("/api/accounts/oauth/start", {email_hint: email});
         let expectedState;
-        try {expectedState = validateStart(started);}
+        try {if (!sessionImport) expectedState = validateStart(started);}
         catch (error) {error.fatal = true; throw error;}
         let page;
         let outcome;
@@ -142,9 +145,10 @@ async function main() {
         const job = {...profiles[email], email, age: ageOn(profiles[email].birth_date)};
         try {
           browser = await launchBrowser(profileForAccount(local, email, browserMode), config.proxy || "", false, browserMode);
-          page = await newAccountPage(browser, expectedState);
-          await page.navigate(started.authorize_url);
-          outcome = await driveAccount({page, job, reader, guard, used, started, automatic, signal: stopController.signal,
+          page = await newAccountPage(browser, expectedState, {sessionImport});
+          await page.navigate(sessionImport ? "https://chatgpt.com/auth/login" : started.authorize_url);
+          const accountOptions = {page, job, reader, guard, used, started, automatic, signal: stopController.signal};
+          outcome = sessionImport ? await driveSessionAccount({...accountOptions, api}) : await driveAccount({...accountOptions,
             finish: callback => api("/api/accounts/oauth/finish", {session_id: started.session_id, callback}, 180000)});
           return outcome;
         }
