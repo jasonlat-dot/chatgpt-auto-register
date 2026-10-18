@@ -155,9 +155,9 @@ test("Session browser contexts preserve normal/incognito isolation without OAuth
     const browser = {mode, listeners: new Set(), send: async (method, params) => {
       calls.push({method, params});
       return {browserContextId: "isolated", targetId: "tab", sessionId: "session"};
-    }, evaluate: async () => ({kind: "empty"})};
+    }, evaluate: async (sessionId, expression) => expression.includes("pageLoadSnapshot") ? {ready: true, key: "synthetic"} : {kind: "empty"}};
     const page = await newAccountPage(browser, undefined, {sessionImport: true});
-    assert.equal(browser.listeners.size, 0);
+    assert.equal(browser.listeners.size, 1);
     assert.equal(calls.some(x => x.method === "Fetch.enable"), false);
     assert.equal(calls.some(x => x.method === "Target.createBrowserContext"), mode === "incognito");
     assert.deepEqual(await page.readSession(), {kind: "empty"});

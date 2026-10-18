@@ -16,6 +16,7 @@ node validation/unattended-browser-check.mjs
 node validation/birthday-browser-check.mjs
 node validation/session-browser-check.mjs
 node validation/otp-transition-browser-check.mjs
+node validation/page-load-browser-check.mjs
 ```
 
 这些验证使用本机独立浏览器配置和合成页面。生日验证覆盖：默认当天日期、原生 `date`、`YYYY/MM/DD` 和 `MM/DD/YYYY` 文本框、类似 React Aria 的分段编辑，以及受控值 / 隐藏日期不一致时拒绝提交。
@@ -27,3 +28,5 @@ Session 验证在普通和无痕的独立浏览器上下文中覆盖登录按钮
 PowerShell 文件需保留 UTF-8 BOM，`start.cmd` 保持 ASCII 与 CRLF。Bash 补丁保持 LF。不要把真实邮箱、凭据、账号状态、浏览器配置、调试日志或原始截图加入测试夹具。
 
 资料提交过渡验证使用合成姓名/年龄表单，点击继续后转圈 20 秒再返回模拟 OAuth 回调。应等待完成、只导入一次，不能按普通未知页 3 秒规则提前退出。OTP 单元测试另外验证按钮延迟启用、控件重建、手工输入保护和有界超时。
+
+关闭前载入验证使用独立普通/无痕浏览器，页面文档完成后仍显示 3 秒 progressbar；必须等待指示消失并稳定后才能关闭。单元及 Windows 模拟菜单另验证加载失败保留窗口、外层清理不重复关闭、不启动下一账号、保留已确认结果。

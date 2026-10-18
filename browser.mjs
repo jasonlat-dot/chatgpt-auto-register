@@ -6,6 +6,7 @@ import {validateBrowserMode} from "./browser-mode.mjs";
 import {prepareBirthday} from "./birthday.mjs";
 import {browserSessionProbe, sessionLandingStep} from "./session-import.mjs";
 import {waitForStablePage} from "./page-timing.mjs";
+import {pageLoadSnapshot, waitForPageLoaded} from "./page-load.mjs";
 
 export async function launchBrowser(profile, proxy = "", headless = false, mode = "incognito") {
   validateBrowserMode(mode);
@@ -61,14 +62,18 @@ export async function launchBrowser(profile, proxy = "", headless = false, mode 
     catch {clearTimeout(timer); pending.delete(current); reject(new Error("浏览器连接已中断。"));}
   });
   let closing;
+  let detached = false;
   return {
     send, listeners, mode,
+    isClosed() {return child.exitCode !== null || child.signalCode !== null;},
+    async detach() {detached = true; try {socket.close();} finally {child.unref();}},
     async evaluate(sessionId, expression) {
       const result = await send("Runtime.evaluate", {expression, awaitPromise: true, returnByValue: true}, sessionId);
       if (result.exceptionDetails) throw new Error("当前页面暂时无法操作，请在浏览器检查。");
       return result.result.value;
     },
     async close() {
+      if (detached) throw Object.assign(new Error("当前浏览器窗口已保留，请手动关闭。"), {fatal: true, browserRetained: true});
       if (closing) return closing;
       closing = (async () => {
       const exited = new Promise(ok => {
@@ -95,7 +100,7 @@ export async function launchBrowser(profile, proxy = "", headless = false, mode 
 
 export async function newAccountPage(browser, expectedState, {sessionImport = false, actionDelayMs = 0, signal} = {}) {
   const mode = validateBrowserMode(browser.mode ?? "incognito");
-  const browserContextId = mode === "incognito" ? (await browser.send("Target.createBrowserContext")).browserContextId : undefined;
+  const browserContextId = mode === "incognito" ? (await browser.send("Target.createBrowserContext", {disposeOnDetach: false})).browserContextId : undefined;
   let targetId;
   try {({targetId} = await browser.send("Target.createTarget", {url: "about:blank", ...(browserContextId ? {browserContextId} : {})}));}
   catch (error) {
@@ -103,6 +108,25 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
     throw error;
   }
   const {sessionId} = await browser.send("Target.attachToTarget", {targetId, flatten: true});
+  let loading = false;
+  let mainFrameId;
+  const navigationListener = message => {
+    if (message.sessionId !== sessionId) return;
+    if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {mainFrameId = message.params.frame.id; loading = true;}
+    if (message.method === "Page.frameStartedLoading" && (!mainFrameId || message.params.frameId === mainFrameId)) loading = true;
+    if (message.method === "Page.frameStoppedLoading" && (!mainFrameId || message.params.frameId === mainFrameId)) loading = false;
+    if (message.method === "Page.loadEventFired") loading = false;
+  };
+  browser.listeners.add(navigationListener);
+  await browser.send("Page.enable", {}, sessionId);
+  const tree = await browser.send("Page.getFrameTree", {}, sessionId);
+  mainFrameId = tree?.frameTree?.frame?.id;
+  const loadState = async () => {
+    if (browser.isClosed?.()) return {ready: true, closed: true};
+    if (loading) return {ready: false};
+    const state = await browser.evaluate(sessionId, "(" + pageLoadSnapshot.toString() + ")()");
+    return {...state, ready: !!state?.ready && !loading};
+  };
   let callback = null;
   let callbackError = null;
   const listener = message => {
@@ -122,12 +146,26 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
   return {
     sessionId,
     get callback() {if (callbackError) throw callbackError; return callback;},
-    async navigate(url) {return browser.send("Page.navigate", {url}, sessionId);},
+    async navigate(url) {
+      loading = true;
+      try {const result = await browser.send("Page.navigate", {url}, sessionId); if (result?.errorText) loading = false; return result;}
+      catch (error) {loading = false; throw error;}
+    },
+    async waitUntilLoaded(options) {return waitForPageLoaded(loadState, options);},
+    async showImportComplete() {
+      if (!callback) return false;
+      const html = '<!doctype html><meta charset="utf-8"><title>导入已确认</title><body style="font-family:system-ui;padding:48px;line-height:1.8"><h1>后端已确认导入</h1><p>本次 OAuth 授权与导入已完成。页面加载稳定后将关闭窗口。</p></body>';
+      loading = true;
+      await browser.send("Page.navigate", {url: "data:text/html;charset=utf-8," + encodeURIComponent(html)}, sessionId);
+      return true;
+    },
     async readSession() {
       if (!sessionImport) throw new Error("当前页面未启用 Session 导入。");
+      if (!(await loadState()).ready) return {kind: "loading"};
       return browser.evaluate(sessionId, "(" + browserSessionProbe.toString() + ")()");
     },
     async step(job, code = "") {
+      if (!(await loadState()).ready) return {kind: "loading"};
       if (actionDelayMs && !(await waitForStablePage(browser, sessionId, actionDelayMs, {signal}))) return {kind: "loading"};
       if (signal?.aborted) throw new Error("用户已停止当前任务。");
       if (callback || callbackError) return {kind: "loading"};
@@ -144,11 +182,10 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
       return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + "," + JSON.stringify(birthday.fields?.map(f => f.index) || []) + "," + JSON.stringify({preferLogin: sessionImport}) + ")");
     },
     async close() {
+      browser.listeners.delete(navigationListener);
       browser.listeners.delete(listener);
-      try {
-        if (browserContextId) await browser.send("Target.disposeBrowserContext", {browserContextId});
-        else await browser.send("Target.closeTarget", {targetId});
-      } catch {}
+      if (browserContextId) await browser.send("Target.disposeBrowserContext", {browserContextId});
+      else await browser.send("Target.closeTarget", {targetId});
     },
   };
 }

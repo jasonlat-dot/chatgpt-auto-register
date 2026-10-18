@@ -49,5 +49,6 @@ test("ordinary page uses default browser context; private page creates and dispo
     assert.equal(browser.listeners.size, 0);
     assert.equal(calls.at(-1).method, mode === "incognito" ? "Target.disposeBrowserContext" : "Target.closeTarget");
     assert.equal(calls.some(call => call.method === "Target.createBrowserContext"), mode === "incognito");
+    if (mode === "incognito") assert.equal(calls.find(call => call.method === "Target.createBrowserContext").params.disposeOnDetach, false);
   }
 });

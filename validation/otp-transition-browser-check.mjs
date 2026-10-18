@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {resolve} from "node:path";
 import {launchBrowser, newAccountPage} from "../browser.mjs";
 import {driveAccount} from "../account-flow.mjs";
+import {closeAccountBrowser} from "../page-load.mjs";
 
 // A synthetic OTP button is enabled after rerender, then the profile form spins for twenty seconds.
 // All test-tab requests are intercepted; no real service/account is used.
@@ -49,6 +50,14 @@ try {
   assert.deepEqual(result, {warning: false});
   assert.ok(Date.now() - began >= 23000);
   assert.equal(imports, 1);
+  const waitUntilLoaded = page.waitUntilLoaded.bind(page);
+  page.waitUntilLoaded = async options => {
+    const ready = await waitUntilLoaded(options);
+    assert.equal(await browser.evaluate(page.sessionId, "document.title"), "导入已确认");
+    return ready;
+  };
+  await closeAccountBrowser(page, browser, {confirmedImport: true, notify: () => {}});
+  page = undefined;
   console.log("PASS: real isolated Edge retries a delayed/rebuilt OTP button, submits profile, waits through a 20-second spinner, captures callback before network, waits one second and imports once; no real service access.");
 } finally {
   if (route) browser.listeners.delete(route);

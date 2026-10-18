@@ -11,6 +11,7 @@ import {driveAccount, summarizeRun, printSummary} from "./account-flow.mjs";
 import {profileForAccount, readBrowserMode, saveBrowserMode} from "./browser-mode.mjs";
 import {ADMIN_AUTH_EXIT, ADMIN_KEY_MISSING_EXIT, adminAuthError, apiBase, configuredAdminKey, saveAdminKey, verifyAdminKey} from "./admin-auth.mjs";
 import {driveSessionAccount} from "./session-import.mjs";
+import {closeAccountBrowser} from "./page-load.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const local = resolve(root, ".local");
@@ -156,13 +157,16 @@ async function main() {
         catch (error) {primaryError = error; throw error;}
         finally {
           try {
-            if (outcome?.skipped) console.log("关闭当前浏览器，原因：" + outcome.reason);
-            else if (outcome) console.log("后端导入已确认，正在关闭当前浏览器…");
-            else if (primaryError) console.log("当前步骤未完成，正在关闭浏览器；请查看本次结果中的失败或待核对原因。");
-            if (page) await page.close();
-            if (browser) await browser.close();
+            if (outcome?.skipped) console.log("准备关闭当前浏览器，原因：" + outcome.reason);
+            else if (outcome) console.log("后端导入已确认，准备关闭当前浏览器…");
+            else if (primaryError) console.log("当前步骤未完成，准备检查页面后关闭浏览器；请查看本次结果中的失败或待核对原因。");
+            await closeAccountBrowser(page, browser, {confirmedImport: !sessionImport && !!outcome && !outcome.skipped});
             browser = undefined;
           } catch (error) {
+            if (error.browserRetained) {
+              browser = undefined;
+              if (outcome) outcome = {...outcome, reason: (outcome.reason ? outcome.reason + "；" : "") + "页面未加载完成，窗口已保留，队列已停止。"};
+            }
             error.fatal = true;
             error.outcome = outcome;
             error.submitted = primaryError?.submitted;

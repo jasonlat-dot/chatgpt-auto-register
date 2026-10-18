@@ -51,7 +51,7 @@ export async function driveSessionAccount(options) {
       let probe;
       try {probe = await page.readSession();}
       catch {if (++failures >= 3) throw rejected("连续读取浏览器 Session 失败，已跳过当前账号。"); return null;}
-      if (["not-on-site", "empty"].includes(probe?.kind)) {failures = 0; return null;}
+      if (["not-on-site", "empty", "loading"].includes(probe?.kind)) {failures = 0; return null;}
       if (probe?.kind !== "ready") {
         if (++failures >= 3) throw rejected("浏览器 Session 接口不可用或响应异常，已跳过当前账号。");
         return null;
