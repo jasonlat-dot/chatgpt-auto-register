@@ -89,12 +89,51 @@ export function birthdayPlan(job, action = "inspect", focusIndex = -1) {
   return {kind: "birthday", fields, matches: matches && hidden.every(e => e.value.slice(0, 10) === job.birth_date)};
 }
 
-export async function prepareBirthday(browser, sessionId, job) {
+export async function typeBirthdayField(index, expected) {
+  const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+  const element = [...document.querySelectorAll('input,select,[role="spinbutton"]')][index];
+  if (!element?.isConnected || element.disabled || element.readOnly) return false;
+  const setter = Object.getOwnPropertyDescriptor(element.tagName === "SELECT" ? HTMLSelectElement.prototype : HTMLInputElement.prototype, "value").set;
+  const fill = value => {
+    setter.call(element, value);
+    element.dispatchEvent(new Event("input", {bubbles: true}));
+    element.dispatchEvent(new Event("change", {bubbles: true}));
+  };
+  let touched = false;
+  const onInput = event => {if (event.isTrusted && event.target === element) touched = true;};
+  document.addEventListener("input", onInput, true);
+  try {
+    element.focus();
+    if (element.tagName === "SELECT" || element.type === "date") fill(expected);
+    else {
+      let text = "";
+      fill(text);
+      for (const character of String(expected)) {
+        await pause(800);
+        if (!element.isConnected || touched || window.__cg2InputCancelled) return false;
+        text += character;
+        fill(text);
+      }
+    }
+    await pause(1000);
+    return element.isConnected && !touched && !window.__cg2InputCancelled;
+  } finally {document.removeEventListener("input", onInput, true);}
+}
+
+export async function prepareBirthday(browser, sessionId, job, {paced = false, signal} = {}) {
+  const checkStop = () => {if (signal?.aborted) throw new Error("用户已停止当前任务。");};
+  checkStop();
   const inspect = (action = "inspect", index = -1) => browser.evaluate(sessionId, "(" + birthdayPlan.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(action) + "," + index + ")");
   let plan = await inspect();
   if (plan.kind !== "birthday") return plan;
   if (!plan.matches) {
-    await inspect("fill");
+    if (paced) {
+      for (const field of plan.fields.filter(f => f.method !== "keyboard")) {
+        checkStop();
+        const filled = await browser.evaluate(sessionId, "(" + typeBirthdayField.toString() + ")(" + field.index + "," + JSON.stringify(field.expected) + ")");
+        if (!filled) return {kind: "unsupported"};
+      }
+    } else await inspect("fill");
     const order = {year: 0, month: 1, day: 2};
     for (const f of plan.fields.filter(f => f.method === "keyboard").sort((a, b) => order[a.part] - order[b.part])) {
       if ((await inspect("focus", f.index)).kind !== "focused") return {kind: "unsupported"};
@@ -108,8 +147,13 @@ export async function prepareBirthday(browser, sessionId, job) {
         await key("Backspace", "Backspace", 8);
       }
       if ((await inspect("focus", f.index)).kind !== "focused") return {kind: "unsupported"};
-      for (const digit of f.expected) await key(digit, "Digit" + digit, 48 + Number(digit), digit);
+      for (const digit of f.expected) {
+        if (paced) await browser.evaluate(sessionId, "new Promise(resolve => setTimeout(resolve, 800))");
+        checkStop();
+        await key(digit, "Digit" + digit, 48 + Number(digit), digit);
+      }
       await key("Tab", "Tab", 9);
+      if (paced) await browser.evaluate(sessionId, "new Promise(resolve => setTimeout(resolve, 1000))");
     }
     await browser.evaluate(sessionId, "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     plan = await inspect();

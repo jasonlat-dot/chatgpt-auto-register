@@ -53,7 +53,7 @@ export async function launchBrowser(profile, proxy = "", headless = false, mode 
   socket.addEventListener("close", () => {for (const item of pending.values()) {clearTimeout(item.timer); item.reject(new Error("浏览器已关闭。"));} pending.clear();});
   const send = (method, params = {}, sessionId) => new Promise((ok, reject) => {
     const current = ++id;
-    const timer = setTimeout(() => {pending.delete(current); reject(new Error("浏览器操作超时。"));}, 10000);
+    const timer = setTimeout(() => {pending.delete(current); reject(new Error("浏览器操作超时。"));}, method === "Runtime.evaluate" ? 300000 : 10000);
     pending.set(current, {ok, reject, timer, method});
     try {socket.send(JSON.stringify({id: current, method, params, ...(sessionId ? {sessionId} : {})}));}
     catch {clearTimeout(timer); pending.delete(current); reject(new Error("浏览器连接已中断。"));}
@@ -121,6 +121,8 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
   }
   const {sessionId} = await browser.send("Target.attachToTarget", {targetId, flatten: true});
   await browser.closeBootstrapTabs?.();
+  const abortInput = () => {void browser.evaluate(sessionId, "window.__cg2InputCancelled = true").catch(() => {});};
+  signal?.addEventListener("abort", abortInput, {once: true});
   let loading = false;
   let mainFrameId;
   const navigationListener = message => {
@@ -191,14 +193,15 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
         if (origin !== "https://auth.openai.com") {
           const landing = await browser.evaluate(sessionId, "(" + sessionLandingStep.toString() + ")()");
           if (landing.kind !== "login-form") return landing;
-          return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + ",[],{preferLogin:true,allowChatGPTLogin:true})");
+          return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + ",[],{preferLogin:true,allowChatGPTLogin:true,paced:true})");
         }
       }
-      const birthday = await prepareBirthday(browser, sessionId, job);
+      const birthday = await prepareBirthday(browser, sessionId, job, {paced: true, signal});
       if (birthday.kind === "unsupported") return {kind: "manual-profile"};
-      return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + "," + JSON.stringify(birthday.fields?.map(f => f.index) || []) + "," + JSON.stringify({preferLogin: sessionImport}) + ")");
+      return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + "," + JSON.stringify(birthday.fields?.map(f => f.index) || []) + "," + JSON.stringify({preferLogin: sessionImport, paced: true}) + ")");
     },
     async close() {
+      signal?.removeEventListener("abort", abortInput);
       browser.listeners.delete(navigationListener);
       browser.listeners.delete(listener);
       if (browserContextId) await browser.send("Target.disposeBrowserContext", {browserContextId});
@@ -208,96 +211,160 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
 }
 
 // Conservative form adapter. Unknown pages remain visible for the user to handle.
-export function formStep(job, code, birthdayIndices = [], {preferLogin = false, allowChatGPTLogin = false} = {}) {
-  if (location.href === "about:blank" || document.readyState === "loading") return {kind: "loading"};
-  const chatGPTLogin = allowChatGPTLogin && location.origin === "https://chatgpt.com" && /^\/auth\/(?:login|log-in)(?:\/|$)/.test(location.pathname);
-  if (location.hostname !== "auth.openai.com" && !chatGPTLogin) return {kind: "manual"};
-  if (!window.__cg2TouchedInputs) {
-    window.__cg2TouchedInputs = new WeakSet();
-    document.addEventListener("input", event => {if (event.isTrusted) window.__cg2TouchedInputs.add(event.target);}, true);
+export function formStep(job, code, birthdayIndices = [], {preferLogin = false, allowChatGPTLogin = false, paced = false} = {}) {
+  function* steps() {
+    if (location.href === "about:blank" || document.readyState === "loading") return {kind: "loading"};
+    const chatGPTLogin = allowChatGPTLogin && location.origin === "https://chatgpt.com" && /^\/auth\/(?:login|log-in)(?:\/|$)/.test(location.pathname);
+    if (location.hostname !== "auth.openai.com" && !chatGPTLogin) return {kind: "manual"};
+    if (!window.__cg2TouchedInputs) {
+      window.__cg2TouchedInputs = new WeakSet();
+      document.addEventListener("input", event => {if (event.isTrusted) window.__cg2TouchedInputs.add(event.target);}, true);
+    }
+    const visible = element => !!element && !element.disabled && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+    const inputs = [...document.querySelectorAll("input")].filter(visible);
+    const birthdayElements = new Set([...document.querySelectorAll('input,select,[role="spinbutton"]')].filter((e, i) => birthdayIndices.includes(i)));
+    const text = (document.body?.innerText || "").slice(0, 10000);
+    if (inputs.some(x => x.type === "tel" && /phone|mobile|手机|电话/i.test(x.name + " " + x.placeholder)) || /电话号码是必填项|phone number is required|verify your phone|短信|WhatsApp/i.test(text) || [...document.querySelectorAll("iframe")].some(x => visible(x) && /captcha|challenge/i.test(x.src))) return {kind: "manual-verification"};
+    const label = element => [element.name, element.id, element.autocomplete, element.placeholder, element.getAttribute("aria-label"), ...[...(element.labels || [])].map(x => x.textContent)].filter(Boolean).join(" ").toLowerCase();
+    const codeInputs = inputs.filter(x => x.autocomplete === "one-time-code" || /\b(otp|code|verification.code)\b|验证码/.test(label(x)) || (x.maxLength === 1 && x.inputMode === "numeric"));
+    if (codeInputs.length) {
+      const previousAuto = window.__cg2LastAutoOtp;
+      const fieldKey = input => JSON.stringify([input.type, input.name, input.autocomplete, input.maxLength, input.inputMode]);
+      const sameAuto = previousAuto && codeInputs.length === previousAuto.inputs.length && codeInputs.every((input, i) =>
+        input.value === previousAuto.values[i] && (input === previousAuto.inputs[i] || fieldKey(input) === previousAuto.fields?.[i]));
+      if (codeInputs.some(x => window.__cg2TouchedInputs.has(x)) || (codeInputs.some(x => x.value.trim()) && !sameAuto)) return {kind: "otp-manual"};
+      if (sameAuto) {
+        if (!previousAuto.submitted && (yield {action: "continue"})) {previousAuto.submitted = true; return {kind: "otp-submitted"};}
+        return {kind: previousAuto.submitted ? "otp-waiting" : "otp-ready"};
+      }
+      if (!code) return {kind: "otp"};
+      if (codeInputs.length === 1) codeInputs[0] = yield {action: "fill", element: codeInputs[0], value: code, otp: true};
+      else if (codeInputs.length === 6 && codeInputs.every(x => x.maxLength === 1)) {
+        for (let i = 0; i < codeInputs.length; i++) codeInputs[i] = yield {action: "fill", element: codeInputs[i], value: code[i], otp: true, groupContinues: i < codeInputs.length - 1};
+      }
+      else return {kind: "manual"};
+      window.__cg2LastAutoOtp = {inputs: codeInputs, fields: codeInputs.map(fieldKey), values: codeInputs.map(x => x.value), submitted: false};
+      if (yield {action: "continue"}) {window.__cg2LastAutoOtp.submitted = true; return {kind: "otp-submitted"};}
+      return {kind: "otp-ready"};
+    }
+    const signup = [...document.querySelectorAll("a")].find(x => visible(x) && /^(sign up|create account|注册|请注册|创建账号|创建账户)$/i.test(x.innerText.trim()));
+    if (!preferLogin && signup && !/signup|sign-up|create.account/i.test(location.pathname) && !window.__cg2SignupClicked) {
+      window.__cg2SignupClicked = true; signup.click(); return {kind: "signup"};
+    }
+    const key = location.pathname + "|" + inputs.map(x => x.type + ":" + x.name + ":" + x.placeholder).join("|");
+    if (window.__cg2LastFill === key) return {kind: "waiting"};
+    let filled = 0;
+    let unknown = 0;
+    const [year, month, day] = job.birth_date.split("-");
+    for (const input of inputs) {
+      if (birthdayElements.has(input)) continue;
+      if (["hidden", "submit", "button", "checkbox", "radio"].includes(input.type) || input.readOnly) continue;
+      const name = label(input);
+      let value;
+      if (input.type === "email" || /\bemail\b|邮箱|电子邮件/.test(name)) value = job.email;
+      else if (input.type === "password") value = job.password;
+      else if (/\bage\b|年龄/.test(name)) value = String(job.age);
+      else if (input.type === "date") value = job.birth_date;
+      else if (/birth|\bdob\b|生日|出生日期/.test(name)) {
+        if (/yyyy-mm-dd/i.test(input.placeholder)) value = job.birth_date;
+        else if (/mm.?dd.?yyyy/i.test(input.placeholder)) value = `${month}/${day}/${year}`;
+        else {unknown++; continue;}
+      } else if (/\byear\b|出生年|年份/.test(name)) value = year;
+      else if (/\bmonth\b|月份/.test(name)) value = String(Number(month));
+      else if (/\bday\b|日期|日份/.test(name)) value = String(Number(day));
+      else if (/\b(given.name|first.name)\b/.test(name)) value = job.name.split(" ")[0];
+      else if (/\b(family.name|last.name)\b/.test(name)) value = job.name.split(" ").slice(1).join(" ");
+      else if (/\b(name|full.name)\b|姓名|名字/.test(name)) value = job.name;
+      else if (!input.value) {unknown++; continue;}
+      if (value !== undefined) {yield {action: "fill", element: input, value}; filled++;}
+    }
+    for (const select of [...document.querySelectorAll("select")].filter(visible)) {
+      if (birthdayElements.has(select)) continue;
+      const name = label(select);
+      const number = /\byear\b|年份/.test(name) ? Number(year) : /\bmonth\b|月份/.test(name) ? Number(month) : /\bday\b|日期/.test(name) ? Number(day) : null;
+      const option = number === null ? null : [...select.options].find(x => x.value !== "" && Number(x.value) === number);
+      if (!option) {unknown++; continue;}
+      yield {action: "fill", element: select, value: option.value};
+      filled++;
+    }
+    if (unknown || [...document.querySelectorAll('[role="spinbutton"]:not(input)')].some(e => visible(e) && !birthdayElements.has(e))) return {kind: "manual-profile"};
+    if (filled || birthdayIndices.length || !inputs.length) {
+      if (yield {action: "continue"}) {window.__cg2LastFill = key; return {kind: "advanced"};}
+    }
+    return {kind: "manual"};
   }
-  const visible = element => !!element && !element.disabled && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-  const inputs = [...document.querySelectorAll("input")].filter(visible);
-  const birthdayElements = new Set([...document.querySelectorAll('input,select,[role="spinbutton"]')].filter((e, i) => birthdayIndices.includes(i)));
-  const text = (document.body?.innerText || "").slice(0, 10000);
-  if (inputs.some(x => x.type === "tel" && /phone|mobile|手机|电话/i.test(x.name + " " + x.placeholder)) || /电话号码是必填项|phone number is required|verify your phone|短信|WhatsApp/i.test(text) || [...document.querySelectorAll("iframe")].some(x => visible(x) && /captcha|challenge/i.test(x.src))) return {kind: "manual-verification"};
-  const label = element => [element.name, element.id, element.autocomplete, element.placeholder, element.getAttribute("aria-label"), ...[...(element.labels || [])].map(x => x.textContent)].filter(Boolean).join(" ").toLowerCase();
   const fill = (element, value) => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    const setter = Object.getOwnPropertyDescriptor(element.tagName === "SELECT" ? HTMLSelectElement.prototype : HTMLInputElement.prototype, "value").set;
     setter.call(element, value);
     element.dispatchEvent(new Event("input", {bubbles: true}));
     element.dispatchEvent(new Event("change", {bubbles: true}));
   };
   const clickContinue = () => {
+    const visible = element => !!element && !element.disabled && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     const buttons = [...document.querySelectorAll("button,input[type=submit]")].filter(visible);
     const button = buttons.find(x => /^(continue|next|submit|verify|confirm|create account|sign up|allow|authorize|accept|继续|下一步|提交|验证|确认|注册|创建账户|创建账号|同意|授权)(\s|$)/i.test((x.innerText || x.value || "").trim()));
     if (button) {button.click(); return true;}
     return false;
   };
-  const codeInputs = inputs.filter(x => x.autocomplete === "one-time-code" || /\b(otp|code|verification.code)\b|验证码/.test(label(x)) || (x.maxLength === 1 && x.inputMode === "numeric"));
-  if (codeInputs.length) {
-    const previousAuto = window.__cg2LastAutoOtp;
-    const fieldKey = input => JSON.stringify([input.type, input.name, input.autocomplete, input.maxLength, input.inputMode]);
-    const sameAuto = previousAuto && codeInputs.length === previousAuto.inputs.length && codeInputs.every((input, i) =>
-      input.value === previousAuto.values[i] && (input === previousAuto.inputs[i] || fieldKey(input) === previousAuto.fields?.[i]));
-    if (codeInputs.some(x => window.__cg2TouchedInputs.has(x)) || (codeInputs.some(x => x.value.trim()) && !sameAuto)) return {kind: "otp-manual"};
-    if (sameAuto) {
-      if (!previousAuto.submitted && clickContinue()) {previousAuto.submitted = true; return {kind: "otp-submitted"};}
-      return {kind: previousAuto.submitted ? "otp-waiting" : "otp-ready"};
+  const iterator = steps();
+  if (!paced) {
+    let step = iterator.next();
+    while (!step.done) {
+      const action = step.value;
+      const value = action.action === "continue" ? clickContinue() : (fill(action.element, action.value), action.element);
+      step = iterator.next(value);
     }
-    if (!code) return {kind: "otp"};
-    if (codeInputs.length === 1) fill(codeInputs[0], code);
-    else if (codeInputs.length === 6 && codeInputs.every(x => x.maxLength === 1)) codeInputs.forEach((x, i) => fill(x, code[i]));
-    else return {kind: "manual"};
-    window.__cg2LastAutoOtp = {inputs: codeInputs, fields: codeInputs.map(fieldKey), values: codeInputs.map(x => x.value), submitted: false};
-    if (clickContinue()) {window.__cg2LastAutoOtp.submitted = true; return {kind: "otp-submitted"};}
-    return {kind: "otp-ready"};
+    return step.value;
   }
-  const signup = [...document.querySelectorAll("a")].find(x => visible(x) && /^(sign up|create account|注册|请注册|创建账号|创建账户)$/i.test(x.innerText.trim()));
-  if (!preferLogin && signup && !/signup|sign-up|create.account/i.test(location.pathname) && !window.__cg2SignupClicked) {
-    window.__cg2SignupClicked = true; signup.click(); return {kind: "signup"};
-  }
-  const key = location.pathname + "|" + inputs.map(x => x.type + ":" + x.name + ":" + x.placeholder).join("|");
-  if (window.__cg2LastFill === key) return {kind: "waiting"};
-  let filled = 0;
-  let unknown = 0;
-  const [year, month, day] = job.birth_date.split("-");
-  for (const input of inputs) {
-    if (birthdayElements.has(input)) continue;
-    if (["hidden", "submit", "button", "checkbox", "radio"].includes(input.type) || input.readOnly) continue;
-    const name = label(input);
-    let value;
-    if (input.type === "email" || /\bemail\b|邮箱|电子邮件/.test(name)) value = job.email;
-    else if (input.type === "password") value = job.password;
-    else if (/\bage\b|年龄/.test(name)) value = String(job.age);
-    else if (input.type === "date") value = job.birth_date;
-    else if (/birth|\bdob\b|生日|出生日期/.test(name)) {
-      if (/yyyy-mm-dd/i.test(input.placeholder)) value = job.birth_date;
-      else if (/mm.?dd.?yyyy/i.test(input.placeholder)) value = `${month}/${day}/${year}`;
-      else {unknown++; continue;}
-    } else if (/\byear\b|出生年|年份/.test(name)) value = year;
-    else if (/\bmonth\b|月份/.test(name)) value = String(Number(month));
-    else if (/\bday\b|日期|日份/.test(name)) value = String(Number(day));
-    else if (/\b(given.name|first.name)\b/.test(name)) value = job.name.split(" ")[0];
-    else if (/\b(family.name|last.name)\b/.test(name)) value = job.name.split(" ").slice(1).join(" ");
-    else if (/\b(name|full.name)\b|姓名|名字/.test(name)) value = job.name;
-    else if (!input.value) {unknown++; continue;}
-    if (value !== undefined) {fill(input, value); filled++;}
-  }
-  for (const select of [...document.querySelectorAll("select")].filter(visible)) {
-    if (birthdayElements.has(select)) continue;
-    const name = label(select);
-    const number = /\byear\b|年份/.test(name) ? Number(year) : /\bmonth\b|月份/.test(name) ? Number(month) : /\bday\b|日期/.test(name) ? Number(day) : null;
-    const option = number === null ? null : [...select.options].find(x => x.value !== "" && Number(x.value) === number);
-    if (!option) {unknown++; continue;}
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, option.value);
-    select.dispatchEvent(new Event("input", {bubbles: true}));
-    select.dispatchEvent(new Event("change", {bubbles: true}));
-    filled++;
-  }
-  if (unknown || [...document.querySelectorAll('[role="spinbutton"]:not(input)')].some(e => visible(e) && !birthdayElements.has(e))) return {kind: "manual-profile"};
-  if (filled || birthdayIndices.length || !inputs.length) {
-    if (clickContinue()) {window.__cg2LastFill = key; return {kind: "advanced"};}
-  }
-  return {kind: "manual"};
+  return (async () => {
+    const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+    const writtenInputs = new Set();
+    let result;
+    let step = iterator.next();
+    while (!step.done) {
+      const action = step.value;
+      if (action.action === "continue") {
+        await pause(1000);
+        if (window.__cg2InputCancelled) return {kind: "loading"};
+        if ([...writtenInputs].some(element => window.__cg2TouchedInputs.has(element))) return {kind: "manual-profile"};
+        result = clickContinue();
+      } else {
+        let {element} = action;
+        const {value} = action;
+        const signature = input => JSON.stringify([input.tagName, input.type, input.name, input.id, input.autocomplete, input.placeholder, input.inputMode]);
+        const originalSignature = signature(element);
+        let expectedValue = element.value;
+        // Never overwrite input typed by the user during an asynchronous step.
+        const usable = () => {
+          if (!element.isConnected) {
+            const replacements = [...document.querySelectorAll("input,select")].filter(input => signature(input) === originalSignature && input.value === expectedValue);
+            if (replacements.length !== 1) return false;
+            element = replacements[0];
+          }
+          return !window.__cg2InputCancelled && !element.disabled && !window.__cg2TouchedInputs.has(element) && element.value === expectedValue;
+        };
+        if (!usable()) return {kind: "loading"};
+        element.focus();
+        if (element.tagName === "SELECT" || ["date", "datetime-local", "month", "time"].includes(element.type)) {fill(element, value); expectedValue = String(value);}
+        else {
+          let typed = "";
+          fill(element, typed);
+          expectedValue = typed;
+          for (const character of String(value)) {
+            await pause(800);
+            if (!usable()) return {kind: "loading"};
+            typed += character;
+            fill(element, typed);
+            expectedValue = typed;
+          }
+        }
+        if (!action.groupContinues) await pause(1000);
+        if (!usable()) return {kind: "loading"};
+        writtenInputs.add(element);
+        result = element;
+      }
+      step = iterator.next(result);
+    }
+    return step.value;
+  })();
 }
