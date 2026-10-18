@@ -6,7 +6,7 @@ export function manualReason(kind) {
   return ({"manual-verification": "页面要求手机验证或人机验证", "manual-profile": "注册资料表单需要人工填写", "otp-manual": "验证码已被手工填写，需要人工提交", manual: "页面无法自动处理，需要人工操作"})[kind];
 }
 
-export async function driveAccount({page, job, reader, guard, used, started, finish, signal, automatic = true, notify = console.log, now = Date.now, pause = sleep, readCompletion = () => page.callback, flowLabel = "OAuth", mailFailureOnOtpOnly = false}) {
+export async function driveAccount({page, job, reader, guard, used, started, finish, signal, automatic = true, notify = console.log, now = Date.now, pause = sleep, readCompletion = () => page.callback, flowLabel = "OAuth", mailFailureOnOtpOnly = false, beforeSubmitDelayMs = 0}) {
   const deadline = Math.min(guard.since + 540000, now() + (Number(started.expires_in || 600) - 30) * 1000);
   let previousKind;
   let kindSince = now();
@@ -18,6 +18,8 @@ export async function driveAccount({page, job, reader, guard, used, started, fin
     while (now() < deadline && !signal?.aborted) {
       const completion = await readCompletion();
       if (completion) {
+        if (beforeSubmitDelayMs) await pause(beforeSubmitDelayMs);
+        if (signal?.aborted) throw new Error("用户已停止当前任务。");
         submitted = true;
         const result = await finish(completion);
         if (!Number.isInteger(result.added) || !Number.isInteger(result.skipped) || result.added < 0 || result.skipped < 0 || result.added + result.skipped < 1) throw new Error("后端未确认账号已入库，请检查账号池；当前邮箱保留在待处理文件中。");

@@ -5,6 +5,7 @@ import {sleep, validatedCallback} from "./core.mjs";
 import {validateBrowserMode} from "./browser-mode.mjs";
 import {prepareBirthday} from "./birthday.mjs";
 import {browserSessionProbe, sessionLandingStep} from "./session-import.mjs";
+import {waitForStablePage} from "./page-timing.mjs";
 
 export async function launchBrowser(profile, proxy = "", headless = false, mode = "incognito") {
   validateBrowserMode(mode);
@@ -92,7 +93,7 @@ export async function launchBrowser(profile, proxy = "", headless = false, mode 
   };
 }
 
-export async function newAccountPage(browser, expectedState, {sessionImport = false} = {}) {
+export async function newAccountPage(browser, expectedState, {sessionImport = false, actionDelayMs = 0, signal} = {}) {
   const mode = validateBrowserMode(browser.mode ?? "incognito");
   const browserContextId = mode === "incognito" ? (await browser.send("Target.createBrowserContext")).browserContextId : undefined;
   let targetId;
@@ -127,6 +128,9 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
       return browser.evaluate(sessionId, "(" + browserSessionProbe.toString() + ")()");
     },
     async step(job, code = "") {
+      if (actionDelayMs && !(await waitForStablePage(browser, sessionId, actionDelayMs, {signal}))) return {kind: "loading"};
+      if (signal?.aborted) throw new Error("用户已停止当前任务。");
+      if (callback || callbackError) return {kind: "loading"};
       if (sessionImport) {
         const origin = await browser.evaluate(sessionId, "location.origin");
         if (origin !== "https://auth.openai.com") return browser.evaluate(sessionId, "(" + sessionLandingStep.toString() + ")()");

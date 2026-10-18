@@ -7,7 +7,8 @@ for (const mode of ["normal", "incognito"]) {
 const browser = await launchBrowser(resolve(import.meta.dirname, "../.local/browser-test-" + mode + "-" + Date.now()), "", true, mode);
 try {
   const state = "chatgpt2api-synthetic.state";
-  const page = await newAccountPage(browser, state);
+  const paced = process.argv.includes("--paced");
+  const page = await newAccountPage(browser, state, {actionDelayMs: paced ? 2000 : 0});
   const fixture = `<!doctype html><meta charset=utf-8><h1>Create account</h1><label>Email<input type=email name=email></label><label>Password<input type=password name=password></label><label>Name<input name=name></label><label>Age<input name=age type=number></label><button id=next>Continue</button><script>document.getElementById('next').onclick=()=>{window.testValues=[...document.querySelectorAll('input')].map(x=>x.value); document.body.innerHTML='<label>Code<input name=code autocomplete=one-time-code></label><button id=verify>Continue</button>'; document.getElementById('verify').onclick=()=>{window.testCode=document.querySelector('input').value; location.href='https://platform.openai.com/auth/callback?code=synthetic_not_real&state=${state}';};};</script>`;
   const route = message => {
     if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused" && message.params.request.url.startsWith("https://auth.openai.com/fixture")) {
@@ -19,7 +20,9 @@ try {
   await page.navigate("https://auth.openai.com/fixture");
   const job = {email: "synthetic@mydomain.test", name: "Alex Parker", age: 32, password: "Synthetic-Test-Password", birth_date: "1994-03-01"};
   await sleep(300);
+  const stepStarted = Date.now();
   assert.equal((await page.step(job)).kind, "advanced");
+  if (paced) assert.ok(Date.now() - stepStarted >= 2000, "form actions must wait for the two-second stable-page delay");
   assert.deepEqual(await browser.evaluate(page.sessionId, "window.testValues"), [job.email, job.password, job.name, "32"]);
   assert.equal((await page.step(job)).kind, "otp");
   // Simulate actual keyboard entry. A mail lookup that completes later must not overwrite it.

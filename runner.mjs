@@ -117,6 +117,7 @@ async function main() {
     if (gmailProfile) console.log("接码 Gmail：" + gmailProfile.emailAddress);
     console.log("并发数固定为 1。注册资料、密码保存于 .local/account-credentials.json。Ctrl+C 停止队列。");
     console.log("导入方式：" + (sessionImport ? "Session JSON（登录 ChatGPT 后读取，仅导入 accessToken）" : "OAuth（获取可续期凭据）") + "。");
+    if (!sessionImport) console.log("OAuth 页面操作前固定等待 2 秒；拿到回调后等待 1 秒，再提交后端，提交完成后关闭浏览器。");
     const modeIndex = process.argv.indexOf("--browser-mode");
     const browserMode = await readBrowserMode(local, modeIndex < 0 ? undefined : process.argv[modeIndex + 1] || "");
     console.log("浏览器模式：" + (browserMode === "normal" ? "普通窗口；每个邮箱使用自己的浏览器资料。" : "无痕窗口；每个账号使用全新会话。"));
@@ -145,10 +146,10 @@ async function main() {
         const job = {...profiles[email], email, age: ageOn(profiles[email].birth_date)};
         try {
           browser = await launchBrowser(profileForAccount(local, email, browserMode), config.proxy || "", false, browserMode);
-          page = await newAccountPage(browser, expectedState, {sessionImport});
+          page = await newAccountPage(browser, expectedState, {sessionImport, actionDelayMs: sessionImport ? 0 : 2000, signal: stopController.signal});
           await page.navigate(sessionImport ? "https://chatgpt.com/auth/login" : started.authorize_url);
           const accountOptions = {page, job, reader, guard, used, started, automatic, signal: stopController.signal};
-          outcome = sessionImport ? await driveSessionAccount({...accountOptions, api}) : await driveAccount({...accountOptions,
+          outcome = sessionImport ? await driveSessionAccount({...accountOptions, api}) : await driveAccount({...accountOptions, beforeSubmitDelayMs: 1000,
             finish: callback => api("/api/accounts/oauth/finish", {session_id: started.session_id, callback}, 180000)});
           return outcome;
         }

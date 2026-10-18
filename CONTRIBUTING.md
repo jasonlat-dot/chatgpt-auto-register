@@ -10,6 +10,7 @@ npm test
 
 ```powershell
 node validation/browser-fixture.mjs
+node validation/browser-fixture.mjs --paced
 node validation/browser-storage-check.mjs
 node validation/unattended-browser-check.mjs
 node validation/birthday-browser-check.mjs
