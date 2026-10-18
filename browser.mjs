@@ -8,7 +8,7 @@ import {browserSessionProbe, sessionLandingStep} from "./session-import.mjs";
 import {waitForStablePage} from "./page-timing.mjs";
 import {pageLoadSnapshot, waitForPageLoaded} from "./page-load.mjs";
 import {findChrome, chromeArguments} from "./browser-launch.mjs";
-import {isOfficialCallback, callbackAfterNavigation} from "./official-callback.mjs";
+import {isOfficialCallback, sameOfficialCallback, callbackAfterNavigation} from "./official-callback.mjs";
 
 export async function launchBrowser(profile, proxy = "", headless = false, mode = "incognito") {
   validateBrowserMode(mode);
@@ -129,23 +129,39 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
   let mainDocumentSequence = 0;
   let reloadAfterDocument = null;
   let callbackReloaded = false;
+  let reloadLoaderId;
+  let reloadDocumentConfirmed = false;
   let callback = null;
   let callbackError = null;
   let callbackCandidate = null;
   let callbackTask;
   let finishCallbackNavigation;
+  const startCallbackTask = () => {
+    if (!callbackTask && finishCallbackNavigation) callbackTask = Promise.resolve().then(finishCallbackNavigation);
+  };
+  const callbackUrlInFrame = frame => [frame?.url, frame?.unreachableUrl].find(isOfficialCallback);
+  const confirmReloadDocument = () => {
+    if (callbackReloaded && !reloadDocumentConfirmed && mainDocumentSequence > reloadAfterDocument) {
+      reloadDocumentConfirmed = true;
+      notify("已检测到刷新后的新文档，等待页面加载稳定…");
+    }
+  };
   const navigationListener = message => {
     if (message.sessionId !== sessionId) return;
     if (!sessionImport && message.method === "Network.requestWillBeSent" && message.params.type === "Document" &&
       (!mainFrameId || message.params.frameId === mainFrameId) && isOfficialCallback(message.params.request.url)) {
       // Keep only the in-memory URL; allow the request to reach the official server.
-      callbackCandidate ??= message.params.request.url;
+      if (!callbackCandidate) {
+        callbackCandidate = message.params.request.url;
+        notify("已观察到官方回调导航，正在确认当前页面地址…");
+      }
     }
     if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {
       mainDocumentSequence++;
       mainFrameId = message.params.frame.id; loading = true;
-      if (!sessionImport && isOfficialCallback(message.params.frame.url)) callbackCandidate ??= message.params.frame.url;
-      if (callbackCandidate && !callbackTask && finishCallbackNavigation) callbackTask = finishCallbackNavigation();
+      if (!sessionImport && callbackUrlInFrame(message.params.frame)) callbackCandidate ??= callbackUrlInFrame(message.params.frame);
+      confirmReloadDocument();
+      if (callbackCandidate) startCallbackTask();
     }
     if (message.method === "Page.frameStartedLoading" && (!mainFrameId || message.params.frameId === mainFrameId)) loading = true;
     if (message.method === "Page.frameStoppedLoading" && (!mainFrameId || message.params.frameId === mainFrameId)) loading = false;
@@ -157,7 +173,15 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
   mainFrameId = tree?.frameTree?.frame?.id;
   const loadState = async () => {
     if (browser.isClosed?.()) return {ready: true, closed: true};
-    if (reloadAfterDocument !== null && mainDocumentSequence <= reloadAfterDocument) return {ready: false};
+    if (reloadAfterDocument !== null && mainDocumentSequence <= reloadAfterDocument) {
+      const latestTree = await browser.send("Page.getFrameTree", {}, sessionId);
+      const latest = latestTree?.frameTree?.frame;
+      if (!reloadLoaderId || !latest?.loaderId || latest.loaderId === reloadLoaderId) return {ready: false};
+      mainDocumentSequence = reloadAfterDocument + 1;
+      mainFrameId = latest.id;
+      loading = false;
+      confirmReloadDocument();
+    }
     if (loading) return {ready: false};
     const state = await browser.evaluate(sessionId, "(" + pageLoadSnapshot.toString() + ")()");
     return {...state, ready: !!state?.ready && !loading};
@@ -169,19 +193,34 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
         refreshCurrentCallback: async () => {
           if (callbackReloaded) return;
           const currentTree = await browser.send("Page.getFrameTree", {}, sessionId);
-          const currentUrl = currentTree?.frameTree?.frame?.url;
-          if (currentUrl !== callbackCandidate || !isOfficialCallback(currentUrl)) {
+          const currentFrame = currentTree?.frameTree?.frame;
+          const currentUrl = callbackUrlInFrame(currentFrame);
+          if (!sameOfficialCallback(currentUrl, callbackCandidate)) {
             notify("官方已离开回调页，不重新打开旧地址；等待当前页面稳定后导入。");
             return;
           }
           callbackReloaded = true;
           reloadAfterDocument = mainDocumentSequence;
+          reloadLoaderId = currentFrame?.loaderId;
           loading = true;
+          if (currentFrame?.unreachableUrl) notify("检测到回调地址仍在浏览器中，但文档加载失败；尝试刷新一次。");
           notify("已到达官方回调页，刷新一次；等待刷新后的页面加载稳定，再导入后端。");
           await browser.send("Page.reload", {ignoreCache: false}, sessionId);
+          notify("浏览器已接受刷新命令，尚未确认新页面加载完成。");
         }
       });
+      notify(callbackReloaded ? "刷新后的页面已加载稳定，准备向后端导入。" : "官方目标页已加载稳定，准备向后端导入。");
     } catch (error) {callbackError = error;}
+  };
+  const pollCallbackLocation = async () => {
+    if (sessionImport || callbackTask || callback || callbackError) return;
+    const current = (await browser.send("Page.getFrameTree", {}, sessionId))?.frameTree?.frame;
+    const url = callbackUrlInFrame(current);
+    if (!url) return;
+    callbackCandidate ??= url;
+    mainFrameId = current.id;
+    notify("页面地址检查已确认官方回调，准备执行一次刷新。");
+    startCallbackTask();
   };
   if (!sessionImport) await browser.send("Network.enable", {}, sessionId);
   return {
@@ -207,6 +246,7 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
       return browser.evaluate(sessionId, "(" + browserSessionProbe.toString() + ")()");
     },
     async step(job, code = "") {
+      await pollCallbackLocation();
       if (callbackCandidate || callbackTask || callback || callbackError) return {kind: "loading"};
       if (!(await loadState()).ready) return {kind: "loading"};
       if (actionDelayMs && !(await waitForStablePage(browser, sessionId, actionDelayMs, {signal}))) return {kind: "loading"};

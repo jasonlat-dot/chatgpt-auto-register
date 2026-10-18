@@ -7,6 +7,13 @@ export function isOfficialCallback(url) {
   } catch {return false;}
 }
 
+export function sameOfficialCallback(left, right) {
+  if (!isOfficialCallback(left) || !isOfficialCallback(right)) return false;
+  const first = new URL(left), second = new URL(right);
+  return ["code", "state"].every(key => first.searchParams.getAll(key).length === 1 && second.searchParams.getAll(key).length === 1 &&
+    !!first.searchParams.get(key) && first.searchParams.get(key) === second.searchParams.get(key));
+}
+
 // Only observe official requests. Validation and handoff wait for the new document.
 export async function callbackAfterNavigation(url, state, waitUntilLoaded, {signal, isClosed = () => false, refreshCurrentCallback} = {}) {
   if (!isOfficialCallback(url)) throw new Error("不是预期的官方 OAuth 回调地址。");

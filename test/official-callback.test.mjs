@@ -1,10 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {callbackAfterNavigation, isOfficialCallback} from "../official-callback.mjs";
+import {callbackAfterNavigation, isOfficialCallback, sameOfficialCallback} from "../official-callback.mjs";
 import {newAccountPage} from "../browser.mjs";
 
 const state = "chatgpt2api-synthetic-state";
 const url = "https://platform.openai.com/auth/callback?code=synthetic&state=" + state;
+
+test("callback identity tolerates reordered/encoded query parameters without accepting other codes or duplicate values", () => {
+  const reordered = "https://platform.openai.com/auth/callback?scope=openid%20email&state=" + state + "&code=%73ynthetic#done";
+  assert.equal(sameOfficialCallback(url, reordered), true);
+  assert.equal(sameOfficialCallback(url, reordered.replace("%73ynthetic", "different")), false);
+  assert.equal(sameOfficialCallback(url, url + "&code=synthetic"), false);
+  assert.equal(sameOfficialCallback(url, "https://other.test/auth/callback?code=synthetic&state=" + state), false);
+});
 
 test("official callback URL is validated and exposed only after the destination becomes stable", async () => {
   let finishLoad;
@@ -79,5 +87,28 @@ test("browser observes callback requests without Fetch interception and waits fo
   assert.equal(page.callback, url);
   assert.ok(evaluations >= 2);
   assert.ok(!methods.some(method => method.startsWith("Fetch.")));
+  await page.close();
+});
+
+test("address polling recognizes an unreachable callback and confirms a refreshed loader when navigation events are absent", async () => {
+  const methods = [], logs = [];
+  let frame = {id: "main", url: "about:blank", loaderId: "initial"};
+  const browser = {mode: "normal", listeners: new Set(),
+    async send(method) {
+      methods.push(method);
+      if (method === "Page.reload") frame = {id: "main", url, loaderId: "new-after-refresh"};
+      return {targetId: "target", sessionId: "session", frameTree: {frame}};
+    }, async evaluate() {return {ready: true, key: "new-document"};}};
+  const page = await newAccountPage(browser, state, {notify: text => logs.push(text)});
+  frame = {id: "main", url: "chrome-error://chromewebdata/", unreachableUrl: url, loaderId: "failed-document"};
+  assert.equal((await page.step({})).kind, "loading");
+  for (let i = 0; i < 30 && !page.callback; i++) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(page.callback, url);
+  assert.equal(methods.filter(method => method === "Page.reload").length, 1);
+  assert.ok(logs.some(text => text.includes("地址检查")));
+  assert.ok(logs.some(text => text.includes("接受刷新命令")));
+  assert.ok(logs.some(text => text.includes("新文档")));
+  assert.ok(logs.some(text => text.includes("已加载稳定")));
+  assert.ok(logs.every(text => !text.includes(url) && !text.includes(state)));
   await page.close();
 });
