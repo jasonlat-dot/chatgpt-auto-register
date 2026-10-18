@@ -156,6 +156,9 @@ async function main() {
         catch (error) {primaryError = error; throw error;}
         finally {
           try {
+            if (outcome?.skipped) console.log("关闭当前浏览器，原因：" + outcome.reason);
+            else if (outcome) console.log("后端导入已确认，正在关闭当前浏览器…");
+            else if (primaryError) console.log("当前步骤未完成，正在关闭浏览器；请查看本次结果中的失败或待核对原因。");
             if (page) await page.close();
             if (browser) await browser.close();
             browser = undefined;
@@ -169,6 +172,7 @@ async function main() {
       }, () => stopping, {continueOnError: automatic});
     } finally {
       const summary = summarizeRun(emails, before, state);
+      summary.import_mode = sessionImport ? "session_json" : "oauth";
       printSummary(summary);
       await saveJSON(resolve(local, "last-run-summary.json"), summary);
     }

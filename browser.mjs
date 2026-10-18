@@ -176,21 +176,28 @@ export function formStep(job, code, birthdayIndices = [], {preferLogin = false, 
   };
   const clickContinue = () => {
     const buttons = [...document.querySelectorAll("button,input[type=submit]")].filter(visible);
-    const button = buttons.find(x => /^(continue|next|submit|create account|sign up|allow|authorize|accept|继续|下一步|提交|注册|创建账户|创建账号|同意|授权)(\s|$)/i.test((x.innerText || x.value || "").trim()));
+    const button = buttons.find(x => /^(continue|next|submit|verify|confirm|create account|sign up|allow|authorize|accept|继续|下一步|提交|验证|确认|注册|创建账户|创建账号|同意|授权)(\s|$)/i.test((x.innerText || x.value || "").trim()));
     if (button) {button.click(); return true;}
     return false;
   };
   const codeInputs = inputs.filter(x => x.autocomplete === "one-time-code" || /\b(otp|code|verification.code)\b|验证码/.test(label(x)) || (x.maxLength === 1 && x.inputMode === "numeric"));
   if (codeInputs.length) {
     const previousAuto = window.__cg2LastAutoOtp;
-    const sameAuto = previousAuto && codeInputs.length === previousAuto.inputs.length && codeInputs.every((input, i) => input === previousAuto.inputs[i] && input.value === previousAuto.values[i]);
+    const fieldKey = input => JSON.stringify([input.type, input.name, input.autocomplete, input.maxLength, input.inputMode]);
+    const sameAuto = previousAuto && codeInputs.length === previousAuto.inputs.length && codeInputs.every((input, i) =>
+      input.value === previousAuto.values[i] && (input === previousAuto.inputs[i] || fieldKey(input) === previousAuto.fields?.[i]));
     if (codeInputs.some(x => window.__cg2TouchedInputs.has(x)) || (codeInputs.some(x => x.value.trim()) && !sameAuto)) return {kind: "otp-manual"};
-    if (!code) return {kind: sameAuto ? "otp-waiting" : "otp"};
+    if (sameAuto) {
+      if (!previousAuto.submitted && clickContinue()) {previousAuto.submitted = true; return {kind: "otp-submitted"};}
+      return {kind: previousAuto.submitted ? "otp-waiting" : "otp-ready"};
+    }
+    if (!code) return {kind: "otp"};
     if (codeInputs.length === 1) fill(codeInputs[0], code);
     else if (codeInputs.length === 6 && codeInputs.every(x => x.maxLength === 1)) codeInputs.forEach((x, i) => fill(x, code[i]));
     else return {kind: "manual"};
-    window.__cg2LastAutoOtp = {inputs: codeInputs, values: codeInputs.map(x => x.value)};
-    clickContinue(); return {kind: "otp-submitted"};
+    window.__cg2LastAutoOtp = {inputs: codeInputs, fields: codeInputs.map(fieldKey), values: codeInputs.map(x => x.value), submitted: false};
+    if (clickContinue()) {window.__cg2LastAutoOtp.submitted = true; return {kind: "otp-submitted"};}
+    return {kind: "otp-ready"};
   }
   const signup = [...document.querySelectorAll("a")].find(x => visible(x) && /^(sign up|create account|注册|请注册|创建账号|创建账户)$/i.test(x.innerText.trim()));
   if (!preferLogin && signup && !/signup|sign-up|create.account/i.test(location.pathname) && !window.__cg2SignupClicked) {

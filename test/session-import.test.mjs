@@ -51,7 +51,7 @@ function fixture(overrides = {}) {
     job: {email}, guard: {since: now}, used: new Set(),
     reader: {pendingFailure: null, manual: false, resetWait() {}, read: async () => null},
     api: async () => ({added: 1, skipped: 0, items: [{email}]}),
-    now: () => clock, pause: async () => {clock += 4000;}, ...overrides
+    now: () => clock, pause: async () => {clock += 4000;}, notify: () => {}, ...overrides
   };
   return options;
 }

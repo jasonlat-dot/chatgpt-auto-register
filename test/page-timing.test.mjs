@@ -31,7 +31,7 @@ test("cancelling during the two-second delay prevents any subsequent page action
 function accountOptions(extra = {}) {
   return {page: {callback: "synthetic-callback", step: async () => {throw new Error("must not fill a form after callback");}},
     job: {email: "owned@domain.test"}, reader: {}, guard: {since: Date.now()}, used: new Set(), started: {expires_in: 600},
-    beforeSubmitDelayMs: 1000, ...extra};
+    beforeSubmitDelayMs: 1000, notify: () => {}, ...extra};
 }
 
 test("callback capture waits one second before submitting, and completion waits for backend confirmation", async () => {
