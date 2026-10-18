@@ -17,10 +17,11 @@ for (const redirected of [false, true]) {
     page = await newAccountPage(browser, state);
     assert.ok(!productionMethods.some(method => method.startsWith("Fetch.")));
     let requestedAt;
+    let callbackRequests = 0;
     route = message => {
       if (message.sessionId !== page.sessionId || message.method !== "Fetch.requestPaused") return;
       const {requestId, request} = message.params;
-      if (request.url === callback) requestedAt = Date.now();
+      if (request.url === callback) {requestedAt = Date.now(); callbackRequests++;}
       if (redirected && request.url === callback) {
         void send("Fetch.fulfillRequest", {requestId, responseCode: 302, responseHeaders: [{name: "Location", value: destination}], body: ""}, page.sessionId);
         return;
@@ -37,13 +38,15 @@ for (const redirected of [false, true]) {
     assert.equal(page.callback, null);
     for (let i = 0; i < 100 && !page.callback; i++) await sleep(100);
     assert.equal(page.callback, callback);
+    assert.equal(productionMethods.filter(method => method === "Page.reload").length, redirected ? 0 : 1);
+    assert.equal(callbackRequests, redirected ? 1 : 2);
     assert.ok(Date.now() - requestedAt >= 2900);
     assert.equal(await browser.evaluate(page.sessionId, "location.href"), destination);
     await page.showImportComplete();
     assert.equal(await browser.evaluate(page.sessionId, "location.href"), destination);
     assert.equal(await browser.evaluate(page.sessionId, "document.title"), "Destination fixture");
     assert.ok(!productionMethods.some(method => method.startsWith("Fetch.")));
-    console.log("PASS: " + (redirected ? "redirected" : "direct") + " destination loads and settles before callback release; original page preserved; no production interception; synthetic requests only.");
+    console.log("PASS: " + (redirected ? "redirected destination is not reopened or refreshed" : "current callback reloads exactly once") + "; waits for new document stability before callback release; original page preserved; synthetic requests only.");
   } finally {
     if (route) browser.listeners.delete(route);
     if (page) await page.close();

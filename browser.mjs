@@ -109,7 +109,7 @@ export async function launchBrowser(profile, proxy = "", headless = false, mode 
   };
 }
 
-export async function newAccountPage(browser, expectedState, {sessionImport = false, actionDelayMs = 0, signal} = {}) {
+export async function newAccountPage(browser, expectedState, {sessionImport = false, actionDelayMs = 0, signal, notify = () => {}} = {}) {
   const mode = validateBrowserMode(browser.mode ?? "incognito");
   // Use Chrome's native --incognito window so its private-window UI is visible too.
   // Alternate browser transports without that window still use an isolated context.
@@ -126,6 +126,9 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
   signal?.addEventListener("abort", abortInput, {once: true});
   let loading = false;
   let mainFrameId;
+  let mainDocumentSequence = 0;
+  let reloadAfterDocument = null;
+  let callbackReloaded = false;
   let callback = null;
   let callbackError = null;
   let callbackCandidate = null;
@@ -139,6 +142,7 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
       callbackCandidate ??= message.params.request.url;
     }
     if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {
+      mainDocumentSequence++;
       mainFrameId = message.params.frame.id; loading = true;
       if (!sessionImport && isOfficialCallback(message.params.frame.url)) callbackCandidate ??= message.params.frame.url;
       if (callbackCandidate && !callbackTask && finishCallbackNavigation) callbackTask = finishCallbackNavigation();
@@ -153,13 +157,30 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
   mainFrameId = tree?.frameTree?.frame?.id;
   const loadState = async () => {
     if (browser.isClosed?.()) return {ready: true, closed: true};
+    if (reloadAfterDocument !== null && mainDocumentSequence <= reloadAfterDocument) return {ready: false};
     if (loading) return {ready: false};
     const state = await browser.evaluate(sessionId, "(" + pageLoadSnapshot.toString() + ")()");
     return {...state, ready: !!state?.ready && !loading};
   };
   finishCallbackNavigation = async () => {
     try {
-      callback = await callbackAfterNavigation(callbackCandidate, expectedState, options => waitForPageLoaded(loadState, options), {signal, isClosed: () => !!browser.isClosed?.()});
+      callback = await callbackAfterNavigation(callbackCandidate, expectedState, options => waitForPageLoaded(loadState, options), {
+        signal, isClosed: () => !!browser.isClosed?.(),
+        refreshCurrentCallback: async () => {
+          if (callbackReloaded) return;
+          const currentTree = await browser.send("Page.getFrameTree", {}, sessionId);
+          const currentUrl = currentTree?.frameTree?.frame?.url;
+          if (currentUrl !== callbackCandidate || !isOfficialCallback(currentUrl)) {
+            notify("官方已离开回调页，不重新打开旧地址；等待当前页面稳定后导入。");
+            return;
+          }
+          callbackReloaded = true;
+          reloadAfterDocument = mainDocumentSequence;
+          loading = true;
+          notify("已到达官方回调页，刷新一次；等待刷新后的页面加载稳定，再导入后端。");
+          await browser.send("Page.reload", {ignoreCache: false}, sessionId);
+        }
+      });
     } catch (error) {callbackError = error;}
   };
   if (!sessionImport) await browser.send("Network.enable", {}, sessionId);

@@ -28,6 +28,36 @@ test("failed load, closed window, cancellation and invalid state never produce a
   assert.equal(isOfficialCallback("https://platform.openai.com.evil.test/auth/callback"), false);
 });
 
+test("callback refresh runs once before readiness; refresh failure never releases a callback", async () => {
+  const events = [];
+  assert.equal(await callbackAfterNavigation(url, state, async () => {events.push("ready"); return true;}, {refreshCurrentCallback: async () => events.push("reload")}), url);
+  assert.deepEqual(events, ["reload", "ready"]);
+  await assert.rejects(callbackAfterNavigation(url, state, async () => {throw new Error("must not inspect readiness");}, {refreshCurrentCallback: async () => {throw new Error("refresh failed");}}), /refresh failed/);
+});
+
+test("browser reloads the current callback only once and ignores old document load events", async () => {
+  const methods = [];
+  let currentUrl = "about:blank";
+  const browser = {mode: "normal", listeners: new Set(),
+    async send(method) {methods.push(method); return {targetId: "target", sessionId: "session", frameTree: {frame: {id: "main", url: currentUrl}}};},
+    async evaluate() {return {ready: true, key: "refreshed-document"};}};
+  const page = await newAccountPage(browser, state);
+  const emit = (method, params) => {for (const listener of browser.listeners) listener({sessionId: "session", method, params});};
+  currentUrl = url;
+  emit("Page.frameNavigated", {frame: {id: "main", url}});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  emit("Page.loadEventFired", {});
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  assert.equal(methods.filter(method => method === "Page.reload").length, 1);
+  assert.equal(page.callback, null, "old document becoming ready must not satisfy a pending reload");
+  emit("Page.frameNavigated", {frame: {id: "main", url}});
+  emit("Page.loadEventFired", {});
+  for (let i = 0; i < 30 && !page.callback; i++) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(page.callback, url);
+  assert.equal(methods.filter(method => method === "Page.reload").length, 1);
+  await page.close();
+});
+
 test("browser observes callback requests without Fetch interception and waits for a committed destination", async () => {
   let evaluations = 0;
   const methods = [];
