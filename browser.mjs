@@ -8,7 +8,7 @@ import {browserSessionProbe, sessionLandingStep} from "./session-import.mjs";
 import {waitForStablePage} from "./page-timing.mjs";
 import {pageLoadSnapshot, waitForPageLoaded} from "./page-load.mjs";
 import {findChrome, chromeArguments} from "./browser-launch.mjs";
-import {isOfficialCallback, sameOfficialCallback, callbackAfterNavigation} from "./official-callback.mjs";
+import {isOfficialCallback, shouldRefreshOfficialCallback, callbackAfterNavigation} from "./official-callback.mjs";
 
 export async function launchBrowser(profile, proxy = "", headless = false, mode = "incognito") {
   validateBrowserMode(mode);
@@ -195,8 +195,8 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
           const currentTree = await browser.send("Page.getFrameTree", {}, sessionId);
           const currentFrame = currentTree?.frameTree?.frame;
           const currentUrl = callbackUrlInFrame(currentFrame);
-          if (!sameOfficialCallback(currentUrl, callbackCandidate)) {
-            notify("官方已离开回调页，不重新打开旧地址；等待当前页面稳定后导入。");
+          if (!shouldRefreshOfficialCallback(currentUrl)) {
+            notify("当前页面不是带 code 的官方回调页，不刷新旧地址；等待当前页面稳定后核对授权结果。");
             return;
           }
           callbackReloaded = true;
@@ -207,6 +207,7 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
           notify("已到达官方回调页，刷新一次；等待刷新后的页面加载稳定，再导入后端。");
           await browser.send("Page.reload", {ignoreCache: false}, sessionId);
           notify("浏览器已接受刷新命令，尚未确认新页面加载完成。");
+          return currentUrl;
         }
       });
       notify(callbackReloaded ? "刷新后的页面已加载稳定，准备向后端导入。" : "官方目标页已加载稳定，准备向后端导入。");

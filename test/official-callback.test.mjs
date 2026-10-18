@@ -1,17 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {callbackAfterNavigation, isOfficialCallback, sameOfficialCallback} from "../official-callback.mjs";
+import {callbackAfterNavigation, isOfficialCallback, shouldRefreshOfficialCallback} from "../official-callback.mjs";
 import {newAccountPage} from "../browser.mjs";
 
 const state = "chatgpt2api-synthetic-state";
 const url = "https://platform.openai.com/auth/callback?code=synthetic&state=" + state;
 
-test("callback identity tolerates reordered/encoded query parameters without accepting other codes or duplicate values", () => {
+test("refresh recognizes any official callback with a nonempty code rather than comparing a fixed URL or parameter values", () => {
   const reordered = "https://platform.openai.com/auth/callback?scope=openid%20email&state=" + state + "&code=%73ynthetic#done";
-  assert.equal(sameOfficialCallback(url, reordered), true);
-  assert.equal(sameOfficialCallback(url, reordered.replace("%73ynthetic", "different")), false);
-  assert.equal(sameOfficialCallback(url, url + "&code=synthetic"), false);
-  assert.equal(sameOfficialCallback(url, "https://other.test/auth/callback?code=synthetic&state=" + state), false);
+  assert.equal(shouldRefreshOfficialCallback(reordered), true);
+  assert.equal(shouldRefreshOfficialCallback(reordered.replace("%73ynthetic", "different").replace(state, "different-state")), true);
+  assert.equal(shouldRefreshOfficialCallback("https://platform.openai.com/auth/callback?code=another-code"), true);
+  assert.equal(shouldRefreshOfficialCallback("https://platform.openai.com/auth/callback?code="), false);
+  assert.equal(shouldRefreshOfficialCallback("https://platform.openai.com/auth/callback?state=anything"), false);
+  assert.equal(shouldRefreshOfficialCallback(url + "&code=synthetic"), false);
+  assert.equal(shouldRefreshOfficialCallback("https://other.test/auth/callback?code=synthetic"), false);
+});
+
+test("import uses the callback that was actually refreshed, while still validating its state after loading", async () => {
+  const current = "https://platform.openai.com/auth/callback?code=new-current-code&state=" + state;
+  assert.equal(await callbackAfterNavigation(url, state, async () => true, {refreshCurrentCallback: async () => current}), current);
+  await assert.rejects(callbackAfterNavigation(url, state, async () => true, {refreshCurrentCallback: async () => current.replace(state, "unrelated-state")}), /state/);
 });
 
 test("official callback URL is validated and exposed only after the destination becomes stable", async () => {
