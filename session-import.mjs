@@ -84,6 +84,10 @@ export function sessionLandingStep() {
   if (location.origin !== "https://chatgpt.com") return {kind: "manual"};
   const visible = element => !element.disabled && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
   if (/verify you are human|验证您是真人|确认您是真人|电话号码是必填项/i.test((document.body?.innerText || "").slice(0, 10000)) || [...document.querySelectorAll("iframe")].some(x => visible(x) && /captcha|challenge/i.test(x.src))) return {kind: "manual-verification"};
+  // ChatGPT can render email/password/OTP directly on its own login route.
+  if (/^\/auth\/(?:login|log-in)(?:\/|$)/.test(location.pathname) && [...document.querySelectorAll("input")].some(element =>
+    visible(element) && (["email", "password"].includes(element.type) || element.autocomplete === "one-time-code" ||
+      /\b(email|otp|code|verification.code)\b|邮箱|电子邮件|验证码/i.test([element.name, element.id, element.placeholder, element.getAttribute("aria-label")].join(" "))))) return {kind: "login-form"};
   const login = [...document.querySelectorAll("button,a")].find(element => visible(element) && /^(log in|login|sign in|登录|登入)$/i.test(element.innerText.trim()));
   if (login && Date.now() - (window.__cg2SessionLoginClick || 0) > 3000) {
     window.__cg2SessionLoginClick = Date.now();

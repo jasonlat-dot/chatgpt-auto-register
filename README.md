@@ -92,7 +92,7 @@ Copy-Item accounts.example.txt accounts.txt
 选择菜单 **9**。程序逐个处理 `accounts.txt` 中的待处理邮箱：
 
 1. 使用菜单 7 选定的普通 / 无痕模式打开脚本浏览器，访问 ChatGPT 登录入口。
-2. 优先复用当前账号的已有会话；需要登录时填写已有本机密码，通过 Gmail 自动获取验证码。
+2. 优先复用当前账号的已有会话；需要登录时识别 ChatGPT 自己显示的邮箱页，或跳转后的认证页，填写邮箱和已有本机密码，通过 Gmail 自动获取验证码。
 3. 在同一个浏览器上下文请求 `https://chatgpt.com/api/auth/session`，核对 `user.email` 与当前队列邮箱，检查可读取的过期时间。邮箱不匹配、无法核对或已过期时跳过。
 4. 提取 `accessToken`，与网页“导入 Session JSON”一致，调用后端 `POST /api/accounts`，不经过 OAuth start/finish。
 5. 后端响应确认账号仍在池中后归档；提交后超时、响应异常或账号不在最终列表时标记“结果待核对”，不盲目重复提交。

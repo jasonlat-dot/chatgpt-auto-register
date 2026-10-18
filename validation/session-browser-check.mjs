@@ -5,11 +5,12 @@ import {driveSessionAccount} from "../session-import.mjs";
 
 // Every request from the isolated test tab is intercepted and answered locally.
 // This validates the shipped browser driver, without any real account, password, Gmail or backend.
-for (const mode of ["normal", "incognito"]) {
-  const browser = await launchBrowser(resolve(import.meta.dirname, "../.local/session-validation-" + mode + "-" + Date.now()), "", true, mode);
+for (const mode of ["normal", "incognito"]) for (const entry of ["login-button", "direct-email-form", "same-origin-login-steps"]) {
+  const browser = await launchBrowser(resolve(import.meta.dirname, "../.local/session-validation-" + mode + "-" + entry + "-" + Date.now()), "", true, mode);
   let page;
   let route;
   let loggedIn = false;
+  let directEmailSubmitted = false;
   let routeError;
   let submitted = 0;
   const email = "owned@domain.test";
@@ -27,8 +28,15 @@ for (const mode of ["normal", "incognito"]) {
           contentType = "application/json";
           body = JSON.stringify(loggedIn ? {accessToken, user: {email}, expires: new Date(Date.now() + 3600000).toISOString()} : {});
         } else if (url.href === "https://chatgpt.com/auth/login") {
-          body = '<!doctype html><meta charset=utf-8><button onclick="location.href=\'https://auth.openai.com/log-in\'">Log in</button>';
-        } else if (url.href === "https://auth.openai.com/log-in") {
+          body = entry === "login-button" ? '<!doctype html><meta charset=utf-8><button onclick="location.href=\'https://auth.openai.com/log-in\'">Log in</button>'
+            : `<!doctype html><meta charset=utf-8><h1>登录或注册</h1><button onclick="location.href='https://untrusted.test/provider'">使用 Google 账户继续</button><button onclick="location.href='https://untrusted.test/provider'">使用 Apple 账户继续</button><button onclick="location.href='https://untrusted.test/provider'">使用电话号码继续</button><input type=email name=email placeholder="Email address"><button id=continue>继续</button><script>document.getElementById('continue').onclick=()=>{if(document.querySelector('input').value==='${email}') location.href='${entry === "same-origin-login-steps" ? "https://chatgpt.com/auth/login/password" : "https://auth.openai.com/log-in?emailSubmitted=1"}';};</script>`;
+        } else if (url.href === "https://chatgpt.com/auth/login/password") {
+          directEmailSubmitted = true;
+          body = `<!doctype html><meta charset=utf-8><input type=password name=password><button id=next>继续</button><script>document.getElementById('next').onclick=()=>{if(document.querySelector('input').value==='Synthetic-Password') location.href='https://chatgpt.com/auth/login/verify-email';};</script>`;
+        } else if (url.href === "https://chatgpt.com/auth/login/verify-email") {
+          body = `<!doctype html><meta charset=utf-8><input name=code autocomplete=one-time-code><button id=next>继续</button><script>document.getElementById('next').onclick=()=>{if(document.querySelector('input').value==='123456') location.href='https://chatgpt.com/fixture-complete';};</script>`;
+        } else if (url.origin === "https://auth.openai.com" && url.pathname === "/log-in") {
+          if (url.searchParams.get("emailSubmitted") === "1") directEmailSubmitted = true;
           body = `<!doctype html><meta charset=utf-8><label>Email<input type=email name=email></label><label>Password<input type=password name=password></label><a href="https://auth.openai.com/signup">Sign up</a><button id=next>Continue</button><script>
             document.getElementById('next').onclick=()=>{
               if(document.querySelector('[name=email]').value!=='${email}' || document.querySelector('[name=password]').value!=='Synthetic-Password') return;
@@ -63,9 +71,10 @@ for (const mode of ["normal", "incognito"]) {
     if (routeError) throw routeError;
     assert.deepEqual(result, {warning: false});
     assert.equal(loggedIn, true);
+    assert.equal(directEmailSubmitted, entry !== "login-button");
     assert.equal(submitted, 1);
     assert.equal(used.has("synthetic-mail"), true);
-    console.log("PASS (" + mode + "): real isolated browser, synthetic login + OTP + same-context Session fetch + single mock import; all tab requests intercepted; no real service access.");
+    console.log("PASS (" + mode + ", " + entry + "): real isolated browser, synthetic login + OTP + same-context Session fetch + single mock import; all tab requests intercepted; no real service access.");
   } finally {
     if (route) browser.listeners.delete(route);
     if (page) await page.close();

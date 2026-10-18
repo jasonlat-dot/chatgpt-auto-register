@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
-import {browserSessionProbe, driveSessionAccount, sessionToken, submitSession} from "../session-import.mjs";
+import {browserSessionProbe, driveSessionAccount, sessionLandingStep, sessionToken, submitSession} from "../session-import.mjs";
 import {newAccountPage, formStep} from "../browser.mjs";
 
 const email = "owned@domain.test";
@@ -178,4 +178,31 @@ test("Session login does not follow the existing form adapter's signup link", ()
   assert.equal(signupClicks, 0);
   run(false);
   assert.equal(signupClicks, 1);
+});
+
+test("ChatGPT's direct email form is recognized only on its login route, with phone/challenge checks taking precedence", () => {
+  const input = {type: "email", name: "email", placeholder: "Email address", getAttribute: () => null,
+    getBoundingClientRect: () => ({width: 100, height: 30})};
+  const context = {
+    location: {origin: "https://chatgpt.com", href: "https://chatgpt.com/auth/login", pathname: "/auth/login"},
+    document: {readyState: "complete", body: {innerText: "登录或注册"}, querySelectorAll: selector => selector === "input" ? [input] : []},
+    window: {}
+  };
+  const run = () => JSON.parse(JSON.stringify(vm.runInNewContext("(" + sessionLandingStep.toString() + ")()", context)));
+  assert.equal(run().kind, "login-form");
+  input.type = "password"; input.name = "password"; input.placeholder = "Password";
+  assert.equal(run().kind, "login-form");
+  input.type = "text"; input.name = "code"; input.placeholder = "Code"; input.autocomplete = "one-time-code";
+  assert.equal(run().kind, "login-form");
+  context.location.pathname = "/";
+  assert.equal(run().kind, "waiting");
+  context.location.pathname = "/auth/login";
+  context.document.body.innerText = "确认您是真人";
+  assert.equal(run().kind, "manual-verification");
+  context.location.origin = "https://untrusted.test";
+  assert.equal(run().kind, "manual");
+  const blocked = vm.runInNewContext("(" + formStep.toString() + ")({}, '', [], {allowChatGPTLogin:true})", {
+    ...context, location: {origin: "https://chatgpt.com", hostname: "chatgpt.com", href: "https://chatgpt.com/c/example", pathname: "/c/example"}
+  });
+  assert.equal(blocked.kind, "manual");
 });

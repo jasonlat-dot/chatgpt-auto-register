@@ -133,7 +133,11 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
       if (callback || callbackError) return {kind: "loading"};
       if (sessionImport) {
         const origin = await browser.evaluate(sessionId, "location.origin");
-        if (origin !== "https://auth.openai.com") return browser.evaluate(sessionId, "(" + sessionLandingStep.toString() + ")()");
+        if (origin !== "https://auth.openai.com") {
+          const landing = await browser.evaluate(sessionId, "(" + sessionLandingStep.toString() + ")()");
+          if (landing.kind !== "login-form") return landing;
+          return browser.evaluate(sessionId, "(" + formStep.toString() + ")(" + JSON.stringify(job) + "," + JSON.stringify(code) + ",[],{preferLogin:true,allowChatGPTLogin:true})");
+        }
       }
       const birthday = await prepareBirthday(browser, sessionId, job);
       if (birthday.kind === "unsupported") return {kind: "manual-profile"};
@@ -150,9 +154,10 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
 }
 
 // Conservative form adapter. Unknown pages remain visible for the user to handle.
-export function formStep(job, code, birthdayIndices = [], {preferLogin = false} = {}) {
+export function formStep(job, code, birthdayIndices = [], {preferLogin = false, allowChatGPTLogin = false} = {}) {
   if (location.href === "about:blank" || document.readyState === "loading") return {kind: "loading"};
-  if (location.hostname !== "auth.openai.com") return {kind: "manual"};
+  const chatGPTLogin = allowChatGPTLogin && location.origin === "https://chatgpt.com" && /^\/auth\/(?:login|log-in)(?:\/|$)/.test(location.pathname);
+  if (location.hostname !== "auth.openai.com" && !chatGPTLogin) return {kind: "manual"};
   if (!window.__cg2TouchedInputs) {
     window.__cg2TouchedInputs = new WeakSet();
     document.addEventListener("input", event => {if (event.isTrusted) window.__cg2TouchedInputs.add(event.target);}, true);
