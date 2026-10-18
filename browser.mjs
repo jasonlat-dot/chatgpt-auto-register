@@ -1,5 +1,5 @@
 import {spawn} from "node:child_process";
-import {readFile, mkdir, access, unlink} from "node:fs/promises";
+import {readFile, mkdir, unlink} from "node:fs/promises";
 import {resolve} from "node:path";
 import {sleep, validatedCallback} from "./core.mjs";
 import {validateBrowserMode} from "./browser-mode.mjs";
@@ -7,19 +7,16 @@ import {prepareBirthday} from "./birthday.mjs";
 import {browserSessionProbe, sessionLandingStep} from "./session-import.mjs";
 import {waitForStablePage} from "./page-timing.mjs";
 import {pageLoadSnapshot, waitForPageLoaded} from "./page-load.mjs";
+import {findChrome, chromeArguments} from "./browser-launch.mjs";
 
 export async function launchBrowser(profile, proxy = "", headless = false, mode = "incognito") {
   validateBrowserMode(mode);
-  const paths = ["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Google/Chrome/Application/chrome.exe"];
-  let executable;
-  for (const path of paths) {try {await access(path); executable = path; break;} catch {}}
-  if (!executable) throw new Error("没有找到 Edge / Chrome，请安装浏览器或调整 browser.mjs 的程序路径。");
+  const executable = await findChrome();
+  // Chrome must not open the former Edge profile in place.
+  profile = resolve(profile, "chrome");
   await mkdir(profile, {recursive: true});
   await unlink(resolve(profile, "DevToolsActivePort")).catch(error => {if (error.code !== "ENOENT") throw error;});
-  const args = ["--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-background-mode", "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--disable-extensions"];
-  if (headless) args.push("--headless=new");
-  if (proxy) args.push("--proxy-server=" + proxy, "--proxy-bypass-list=localhost;127.0.0.1;[::1]");
-  args.push("about:blank");
+  const args = chromeArguments(profile, {mode, proxy, headless});
   const child = spawn(executable, args, {windowsHide: headless, stdio: "ignore"});
   let spawnError;
   child.on("error", error => {spawnError = error;});
@@ -50,21 +47,34 @@ export async function launchBrowser(profile, proxy = "", headless = false, mode 
     if (message.id && pending.has(message.id)) {
       const item = pending.get(message.id);
       pending.delete(message.id); clearTimeout(item.timer);
-      if (message.error) item.reject(new Error("浏览器操作失败，请在可见浏览器中检查当前页面。")); else item.ok(message.result);
+      if (message.error) item.reject(new Error("浏览器操作失败（" + item.method + "），请在可见浏览器中检查当前页面。")); else item.ok(message.result);
     } else for (const listener of listeners) listener(message);
   });
   socket.addEventListener("close", () => {for (const item of pending.values()) {clearTimeout(item.timer); item.reject(new Error("浏览器已关闭。"));} pending.clear();});
   const send = (method, params = {}, sessionId) => new Promise((ok, reject) => {
     const current = ++id;
     const timer = setTimeout(() => {pending.delete(current); reject(new Error("浏览器操作超时。"));}, 10000);
-    pending.set(current, {ok, reject, timer});
+    pending.set(current, {ok, reject, timer, method});
     try {socket.send(JSON.stringify({id: current, method, params, ...(sessionId ? {sessionId} : {})}));}
     catch {clearTimeout(timer); pending.delete(current); reject(new Error("浏览器连接已中断。"));}
   });
+  // Record only our own initial blank tabs; never close a later user-opened tab.
+  let bootstrapTargets = [];
+  try {
+    for (let attempt = 0; attempt < 50 && !bootstrapTargets.length; attempt++) {
+      bootstrapTargets = (await send("Target.getTargets")).targetInfos.filter(target => target.type === "page" && target.url === "about:blank").map(target => target.targetId);
+      if (!bootstrapTargets.length) await sleep(100);
+    }
+    if (!bootstrapTargets.length) throw new Error("Chrome 启动窗口未就绪，请关闭本次脚本浏览器后重试。");
+  } catch (error) {socket.close(); child.kill(); throw error;}
   let closing;
   let detached = false;
   return {
-    send, listeners, mode,
+    send, listeners, mode, name: "Google Chrome",
+    takeNativePrivateTarget() {return mode === "incognito" ? bootstrapTargets.shift() : undefined;},
+    async closeBootstrapTabs() {
+      while (bootstrapTargets.length) await send("Target.closeTarget", {targetId: bootstrapTargets.shift()});
+    },
     isClosed() {return child.exitCode !== null || child.signalCode !== null;},
     async detach() {detached = true; try {socket.close();} finally {child.unref();}},
     async evaluate(sessionId, expression) {
@@ -100,14 +110,17 @@ export async function launchBrowser(profile, proxy = "", headless = false, mode 
 
 export async function newAccountPage(browser, expectedState, {sessionImport = false, actionDelayMs = 0, signal} = {}) {
   const mode = validateBrowserMode(browser.mode ?? "incognito");
-  const browserContextId = mode === "incognito" ? (await browser.send("Target.createBrowserContext", {disposeOnDetach: false})).browserContextId : undefined;
-  let targetId;
-  try {({targetId} = await browser.send("Target.createTarget", {url: "about:blank", ...(browserContextId ? {browserContextId} : {})}));}
+  // Use Chrome's native --incognito window so its private-window UI is visible too.
+  // Alternate browser transports without that window still use an isolated context.
+  let targetId = mode === "incognito" ? browser.takeNativePrivateTarget?.() : undefined;
+  const browserContextId = mode === "incognito" && !targetId ? (await browser.send("Target.createBrowserContext", {disposeOnDetach: false})).browserContextId : undefined;
+  try {if (!targetId) ({targetId} = await browser.send("Target.createTarget", {url: "about:blank", ...(browserContextId ? {browserContextId, newWindow: true} : {})}));}
   catch (error) {
     if (browserContextId) await browser.send("Target.disposeBrowserContext", {browserContextId}).catch(() => {});
     throw error;
   }
   const {sessionId} = await browser.send("Target.attachToTarget", {targetId, flatten: true});
+  await browser.closeBootstrapTabs?.();
   let loading = false;
   let mainFrameId;
   const navigationListener = message => {

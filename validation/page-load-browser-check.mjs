@@ -24,7 +24,7 @@ for (const mode of ["normal", "incognito"]) {
     assert.equal((await page.step({})).kind, "loading");
     await closeAccountBrowser(page, browser, {notify: () => {}});
     assert.ok(Date.now() - began >= 3900, "must wait for spinner to finish plus document stability before closing");
-    console.log("PASS (" + mode + "): real isolated Edge stays open through a visible loading spinner and closes only after the page becomes ready and stable; all tab requests intercepted.");
+    console.log("PASS (" + mode + "): real isolated Chrome stays open through a visible loading spinner and closes only after the page becomes ready and stable; all tab requests intercepted.");
     page = undefined;
   } finally {
     if (route) browser.listeners.delete(route);

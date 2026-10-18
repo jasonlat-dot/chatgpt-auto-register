@@ -121,7 +121,7 @@ async function main() {
     if (!sessionImport) console.log("OAuth 页面操作前固定等待 2 秒；拿到回调后等待 1 秒，再提交后端，提交完成后关闭浏览器。");
     const modeIndex = process.argv.indexOf("--browser-mode");
     const browserMode = await readBrowserMode(local, modeIndex < 0 ? undefined : process.argv[modeIndex + 1] || "");
-    console.log("浏览器模式：" + (browserMode === "normal" ? "普通窗口；每个邮箱使用自己的浏览器资料。" : "无痕窗口；每个账号使用全新会话。"));
+    console.log("浏览器：Google Chrome；模式：" + (browserMode === "normal" ? "普通窗口；每个邮箱使用自己的浏览器资料。" : "原生无痕窗口（--incognito）；每个账号使用全新会话。"));
     const used = new Set();
     const before = {...state};
     try {

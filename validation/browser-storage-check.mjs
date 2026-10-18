@@ -36,8 +36,10 @@ for (const mode of ["normal", "incognito"]) {
     assert.deepEqual(await first.read(), {cookie: "", storage: null});
     await first.mark();
     assert.deepEqual(await first.read(), {cookie: "cg2_fixture=persist", storage: "persist"});
-    await first.close();
+    // Keep one window alive while testing a second context in the same process.
+    // Closing the final native private window ends Chrome itself.
     const second = await visit(browser);
+    await first.close();
     const expected = mode === "normal" ? {cookie: "cg2_fixture=persist", storage: "persist"} : {cookie: "", storage: null};
     assert.deepEqual(await second.read(), expected);
     await second.close();
@@ -47,6 +49,6 @@ for (const mode of ["normal", "incognito"]) {
     const reopened = await visit(browser);
     assert.deepEqual(await reopened.read(), expected);
     await reopened.close();
-    console.log("PASS (" + mode + "): real Edge cookies/localStorage " + (mode === "normal" ? "persist across pages and process restart" : "absent after context disposal and process restart") + "; synthetic page only.");
+    console.log("PASS (" + mode + "): real Chrome cookies/localStorage " + (mode === "normal" ? "persist across pages and process restart" : "absent in separate contexts and after process restart") + "; synthetic page only.");
   } finally {await browser.close();}
 }

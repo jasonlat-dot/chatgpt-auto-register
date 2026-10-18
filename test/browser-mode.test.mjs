@@ -52,3 +52,18 @@ test("ordinary page uses default browser context; private page creates and dispo
     if (mode === "incognito") assert.equal(calls.find(call => call.method === "Target.createBrowserContext").params.disposeOnDetach, false);
   }
 });
+
+test("native Chrome private window is reused instead of opening a second differently styled window", async () => {
+  const calls = [];
+  const browser = {mode: "incognito", listeners: new Set(), takeNativePrivateTarget: () => "native-private",
+    async closeBootstrapTabs() {calls.push({method: "close-owned-blank-tabs"});},
+    async send(method, params = {}) {
+      calls.push({method, params});
+      return method === "Target.attachToTarget" ? {sessionId: "session"} : {};
+    }};
+  const page = await newAccountPage(browser, undefined, {sessionImport: true});
+  assert.deepEqual(calls[0], {method: "Target.attachToTarget", params: {targetId: "native-private", flatten: true}});
+  assert.ok(!calls.some(call => ["Target.createBrowserContext", "Target.createTarget"].includes(call.method)));
+  await page.close();
+  assert.deepEqual(calls.at(-1), {method: "Target.closeTarget", params: {targetId: "native-private"}});
+});
