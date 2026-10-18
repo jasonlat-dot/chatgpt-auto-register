@@ -1,7 +1,8 @@
 import {resolve, dirname, basename} from "node:path";
 import {fileURLToPath} from "node:url";
-import {acquireLock, ageOn, newProfile, normalizeEmail, readJSON, runSerial, saveJSON} from "./core.mjs";
-import {appendGenerated, reconcileQueue} from "./queue-files.mjs";
+import {acquireLock, ageOn, newProfile, readJSON, runSerial, saveJSON} from "./core.mjs";
+import {appendGenerated, reconcileQueue, readQueue} from "./queue-files.mjs";
+import {queueStatus, printQueueStatus, planRetry} from "./retry.mjs";
 import {Gmail, jsonRequest} from "./gmail.mjs";
 import {CodeReader} from "./code-reader.mjs";
 import {resolveCodeFailure} from "./failure-choice.mjs";
@@ -35,6 +36,21 @@ async function main() {
     }
     const statusFile = resolve(local, "status.json");
     const state = await readJSON(statusFile, {});
+    if (process.argv.some(arg => ["--queue-status", "--retry", "--retry-all-safe"].includes(arg))) {
+      const queue = await readQueue(root);
+      if (process.argv.includes("--queue-status")) {
+        const view = queueStatus(queue.emails, state, queue.completed);
+        if (process.argv.includes("--json")) console.log(JSON.stringify(view));
+        else printQueueStatus(view);
+        return;
+      }
+      const result = planRetry(queue.emails, state, {email: process.argv[process.argv.indexOf("--retry") + 1], allSafe: process.argv.includes("--retry-all-safe"), confirmedNotImported: process.argv.includes("--confirm-not-imported")}, queue.completed);
+      if (result.changed.length) await saveJSON(statusFile, result.state);
+      console.log(result.changed.length ? `已将 ${result.changed.length} 个账号重新排队；复用已有资料，下次生成新的 OAuth 会话。` : "没有需要变更的账号；待处理账号可直接运行 3 或 4。");
+      if (result.review_count && process.argv.includes("--retry-all-safe")) console.log(`另有 ${result.review_count} 个账号需要先核对后端账号池，本次未变更。`);
+      console.log("这里只修改排队状态，不立即注册。回到菜单选择 3 或 4 开始。");
+      return;
+    }
     const credentialsFile = resolve(local, "account-credentials.json");
     const profiles = await readJSON(credentialsFile, {});
     if (process.argv.includes("--generate")) {
@@ -44,15 +60,6 @@ async function main() {
       const result = await appendGenerated(root, count, domain, state, profiles);
       console.log(`已生成 ${result.emails.length} 个不重复邮箱，追加到 ${basename(result.queueFile)}。`);
       console.log("仅生成待处理地址；域名需能收信。可继续选择 2 预览，或选择 3 / 4 开始处理。");
-      return;
-    }
-    if (process.argv.includes("--retry")) {
-      const email = normalizeEmail(process.argv[process.argv.indexOf("--retry") + 1] || "");
-      if (!email || !state[email]) throw new Error("请指定记录里需要重试的邮箱，例如 --retry name@your-domain.com。");
-      if (["imported", "imported_with_warning"].includes(state[email].status)) throw new Error("该账号已经导入，未重新加入队列。");
-      state[email] = {...state[email], status: "pending"};
-      await saveJSON(statusFile, state);
-      console.log(email + " 已重新排队；下次运行会生成全新的 OAuth 会话。");
       return;
     }
     const config = await readJSON(resolve(root, "config.json"));
@@ -69,6 +76,10 @@ async function main() {
     if (!emails.length) {
       console.log("没有待处理邮箱。可选择菜单 6 生成，或在 accounts.txt 中每行填写一个邮箱。");
       return;
+    }
+    if (process.argv.includes("--run")) {
+      const view = queueStatus(emails, state, queue.completed);
+      if (!view.pending_count) {printQueueStatus(view); return;}
     }
     for (const email of emails) if (!profiles[email]) profiles[email] = newProfile();
     await saveJSON(credentialsFile, profiles);

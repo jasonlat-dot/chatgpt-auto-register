@@ -1,18 +1,20 @@
 ﻿param(
-  [ValidateSet('Menu', 'Gmail', 'Plan', 'Queue', 'Manual', 'Retry', 'CleanLock', 'Generate', 'Browser')]
+  [ValidateSet('Menu', 'Gmail', 'Plan', 'Queue', 'Manual', 'Retry', 'CleanLock', 'Generate', 'Browser', 'RetryMenu')]
   [string]$Mode = 'Menu',
   [string]$Email = '',
   [string]$Count = '',
   [string]$Domain = '',
   [ValidateSet('', 'normal', 'incognito')]
-  [string]$BrowserMode = ''
+  [string]$BrowserMode = '',
+  [switch]$ConfirmedNotImported
 )
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $OutputEncoding
+[Console]::InputEncoding = $OutputEncoding
 Set-Location -LiteralPath $PSScriptRoot
 if ($Mode -eq 'Menu') {
-  $taskMenuModes = @{ '1' = 'Gmail'; '2' = 'Plan'; '3' = 'Queue'; '4' = 'Manual'; '5' = 'CleanLock'; '6' = 'Generate'; '7' = 'Browser' }
+  $taskMenuModes = @{ '1' = 'Gmail'; '2' = 'Plan'; '3' = 'Queue'; '4' = 'Manual'; '5' = 'CleanLock'; '6' = 'Generate'; '7' = 'Browser'; '8' = 'RetryMenu' }
   while ($true) {
     Write-Host 'ChatGPT2API - Windows 账号注册队列'
     Write-Host '自动模式遇到人工验证、未知表单或取码失败直接跳过；结束后汇总结果。'
@@ -34,12 +36,13 @@ if ($Mode -eq 'Menu') {
       } catch { $taskBrowserLabel = '设置无效，请重新选择' }
     }
     Write-Host "7. 选择浏览器模式：普通 / 无痕（当前：$taskBrowserLabel）"
+    Write-Host '8. 查看失败 / 已停止 / 跳过账号，重新排队'
     Write-Host '0. 退出程序'
     Write-Host ''
-    $taskMenuSelection = (Read-Host '请输入选项 0 到 7，然后按回车').Trim()
+    $taskMenuSelection = (Read-Host '请输入选项 0 到 8，然后按回车').Trim()
     if ($taskMenuSelection -eq '0') { break }
     if (-not $taskMenuModes.ContainsKey($taskMenuSelection)) {
-      Write-Host '选项无效，请输入 0 到 7。' -ForegroundColor Yellow
+      Write-Host '选项无效，请输入 0 到 8。' -ForegroundColor Yellow
       continue
     }
     try {
@@ -94,7 +97,7 @@ if ($Mode -eq 'CleanLock') {
   Write-Host '已清理失效的队列锁。现在可以继续选择功能 1、2、3 或 4。' -ForegroundColor Green
   return
 }
-if ($Mode -in @('Generate', 'Browser')) {
+if ($Mode -in @('Generate', 'Browser', 'Retry', 'RetryMenu')) {
   $taskConfig = [pscustomobject]@{ proxy = '' }
 } else {
   $taskConfig = Get-Content -LiteralPath './config.json' -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -138,9 +141,55 @@ try {
     }
     'Retry' {
       if (-not $Email) { throw '请指定需要重试的邮箱，例如：./start.ps1 Retry -Email name@your-domain.com' }
-      & $taskNode.Source --use-env-proxy './runner.mjs' --retry $Email
+      $taskRetryArgs = @()
+      if ($ConfirmedNotImported) { $taskRetryArgs = @('--confirm-not-imported') }
+      & $taskNode.Source --use-env-proxy './runner.mjs' --retry $Email @taskRetryArgs
+    }
+    'RetryMenu' {
+      $taskRetryJson = & $taskNode.Source './runner.mjs' --queue-status --json
+      if ($LASTEXITCODE -ne 0) { throw '读取重试列表失败，请查看上方错误。' }
+      $taskRetryView = ($taskRetryJson -join "`n") | ConvertFrom-Json
+      $taskRetryRows = @($taskRetryView.items | Where-Object { $_.retry -in @('safe', 'review') })
+      if ($taskRetryRows.Count -eq 0) {
+        Write-Host '没有需要重新排队的账号。待处理账号可直接选择 3 或 4。'
+        return
+      }
+      Write-Host '以下账号没有自动重试。清理锁不会改变这些状态。'
+      for ($taskRetryIndex = 0; $taskRetryIndex -lt $taskRetryRows.Count; $taskRetryIndex++) {
+        $taskRetryRow = $taskRetryRows[$taskRetryIndex]
+        Write-Host (('{0}. {1} | {2} | 原因：{3}' -f ($taskRetryIndex + 1), $taskRetryRow.email, $taskRetryRow.label, $taskRetryRow.reason))
+        Write-Host ('   下一步：' + $taskRetryRow.action)
+      }
+      Write-Host 'A. 批量重新排队：仅已停止 / 失败 / 跳过；结果待核对及处理中断的保留'
+      Write-Host '0. 返回，不改变状态'
+      $taskRetryChoice = (Read-Host '输入邮箱前的序号，或 A / 0').Trim()
+      if ($taskRetryChoice -eq '0') { return }
+      if ($taskRetryChoice.ToUpperInvariant() -eq 'A') {
+        & $taskNode.Source './runner.mjs' --retry-all-safe
+      } else {
+        [int]$taskRetryNumber = 0
+        if (-not [int]::TryParse($taskRetryChoice, [ref]$taskRetryNumber) -or $taskRetryNumber -lt 1 -or $taskRetryNumber -gt $taskRetryRows.Count) { throw '序号无效，状态未改变。' }
+        $taskRetrySelected = $taskRetryRows[$taskRetryNumber - 1]
+        $taskRetryArgs = @()
+        if ($taskRetrySelected.retry -eq 'review') {
+          Write-Host '先检查后端账号池。已入库的不要重试；只有确认未入库才重新排队。' -ForegroundColor Yellow
+          $taskRetryConfirm = (Read-Host '确定未入库请输入“未导入”，其他输入返回').Trim()
+          if ($taskRetryConfirm -ne '未导入') { Write-Host '未确认，状态未改变。'; return }
+          $taskRetryArgs = @('--confirm-not-imported')
+        }
+        & $taskNode.Source './runner.mjs' --retry $taskRetrySelected.email @taskRetryArgs
+      }
     }
     { $_ -in @('Queue', 'Manual') } {
+      $taskPreflightJson = & $taskNode.Source './runner.mjs' --queue-status --json
+      if ($LASTEXITCODE -ne 0) { throw '读取队列状态失败，请查看上方错误。' }
+      $taskPreflightView = ($taskPreflightJson -join "`n") | ConvertFrom-Json
+      if ($taskPreflightView.pending_count -eq 0) {
+        & $taskNode.Source './runner.mjs' --queue-status
+        return
+      }
+      if ($taskPreflightView.held_count -gt 0) { Write-Host ('另有 ' + $taskPreflightView.held_count + ' 个历史账号未重试，可在菜单 8 查看原因和重新排队。') }
+
       if (-not $env:CHATGPT2API_ADMIN_KEY) {
         $taskSecret = Read-Host '请输入 ChatGPT2API 管理员密钥（输入内容隐藏）' -AsSecureString
         $taskPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($taskSecret)

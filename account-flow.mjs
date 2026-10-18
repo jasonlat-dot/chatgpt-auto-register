@@ -1,5 +1,6 @@
 import {sleep} from "./core.mjs";
 import {resolveCodeFailure} from "./failure-choice.mjs";
+import {statusInfo} from "./retry.mjs";
 
 export function manualReason(kind) {
   return ({"manual-verification": "页面要求手机验证或人机验证", "manual-profile": "注册资料表单需要人工填写", "otp-manual": "验证码已被手工填写，需要人工提交", manual: "页面无法自动处理，需要人工操作"})[kind];
@@ -85,6 +86,11 @@ export function summarizeRun(emails, before, state) {
 export function printSummary(summary, notify = console.log) {
   const n = summary.counts;
   notify(`本次完成情况（共 ${summary.total} 个）：成功 ${n.success}，已入库但刷新有警告 ${n.warning}，跳过 ${n.skipped}，失败 ${n.failed}，兑换结果待核对 ${n.unknown}，历史记录未重试 ${n.held}，未处理 ${n.unprocessed}。`);
-  for (const item of summary.items) if (["skipped", "failed", "unknown", "held"].includes(item.category)) notify(`${item.email}：${item.reason || item.status}`);
+  for (const item of summary.items) if (["skipped", "failed", "unknown", "held"].includes(item.category)) {
+    const info = statusInfo(item.status);
+    notify(`${item.email}：${item.reason || info.label}`);
+    notify(`  状态：${info.label}；下一步：${info.action}。`);
+  }
+  if (n.skipped || n.failed || n.held || n.unknown) notify("账号不会因仍在 accounts.txt 就自动重试。菜单 8 可重新排队；菜单 5 仅清理运行锁。");
   notify("详细结果已保存到 .local/last-run-summary.json；跳过和失败的邮箱保留在 accounts.txt。");
 }

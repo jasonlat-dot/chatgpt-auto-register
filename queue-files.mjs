@@ -49,6 +49,11 @@ async function snapshot(root) {
   return {files, completedPath, completedText, completed: parse(completedText, completedPath)};
 }
 
+export async function readQueue(root) {
+  const view = await snapshot(root);
+  return {...view, emails: [...new Set(view.files.flatMap(file => file.emails))]};
+}
+
 export async function reconcileQueue(root, state) {
   const view = await snapshot(root);
   const completed = new Set(view.completed);
