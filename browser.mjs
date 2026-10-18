@@ -351,7 +351,7 @@ export function formStep(job, code, birthdayIndices = [], {preferLogin = false, 
           fill(element, typed);
           expectedValue = typed;
           for (const character of String(value)) {
-            await pause(800);
+            await pause(500);
             if (!usable()) return {kind: "loading"};
             typed += character;
             fill(element, typed);

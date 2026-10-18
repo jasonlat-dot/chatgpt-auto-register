@@ -74,6 +74,7 @@ async function main() {
       const domain = domainIndex < 0 ? "" : process.argv[domainIndex + 1];
       const result = await appendGenerated(root, count, domain, state, profiles);
       console.log(`已生成 ${result.emails.length} 个不重复邮箱，追加到 ${basename(result.queueFile)}。`);
+      console.log("邮箱前缀为姓名小写连写 + 生日 YYYYMMDD；同一份姓名、生日和密码已保存，后续填表直接复用。");
       console.log("仅生成待处理地址；域名需能收信。可继续选择 2 预览，或选择 3 / 4 开始处理。");
       return;
     }
@@ -118,7 +119,7 @@ async function main() {
     if (gmailProfile) console.log("接码 Gmail：" + gmailProfile.emailAddress);
     console.log("并发数固定为 1。注册资料、密码保存于 .local/account-credentials.json。Ctrl+C 停止队列。");
     console.log("导入方式：" + (sessionImport ? "Session JSON（登录 ChatGPT 后读取，仅导入 accessToken）" : "OAuth（获取可续期凭据）") + "。");
-    console.log("页面操作前固定等待 2 秒；文本每字 800 毫秒输入，字段之间和点击继续前各等待 1 秒。");
+    console.log("页面操作前固定等待 2 秒；文本每字 500 毫秒输入，字段之间和点击继续前各等待 1 秒。");
     if (!sessionImport) console.log("OAuth 拿到回调后等待 1 秒再提交后端；确认导入并加载完成页后倒计时 3 秒关闭。");
     const modeIndex = process.argv.indexOf("--browser-mode");
     const browserMode = await readBrowserMode(local, modeIndex < 0 ? undefined : process.argv[modeIndex + 1] || "");

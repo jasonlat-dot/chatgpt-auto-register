@@ -2,7 +2,7 @@ import {randomBytes} from "node:crypto";
 import {readFile, writeFile, rename, unlink} from "node:fs/promises";
 import {resolve, basename} from "node:path";
 import {domainToASCII} from "node:url";
-import {emailList, normalizeEmail} from "./core.mjs";
+import {emailList, normalizeEmail, newProfile, readJSON, saveJSON} from "./core.mjs";
 
 const imported = new Set(["imported", "imported_with_warning"]);
 
@@ -88,12 +88,21 @@ export async function reconcileQueue(root, state) {
   };
 }
 
-export function generateEmails(rawCount, rawDomain, excluded, makeLocal = () => "user" + randomBytes(8).toString("hex")) {
+export function profileEmailPrefix(profile) {
+  const name = String(profile?.name || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z]/g, "");
+  const birthday = String(profile?.birth_date || "");
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(birthday);
+  const date = match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))) : null;
+  if (!name || name.length > 56 || !date || date.toISOString().slice(0, 10) !== birthday) throw new Error("姓名或生日无法生成有效邮箱前缀，未写入队列。");
+  return name + birthday.replaceAll("-", "");
+}
+
+export function generateEmails(rawCount, rawDomain, excluded, makeLocal = () => profileEmailPrefix(newProfile())) {
   if (!/^[1-9][0-9]*$/.test(String(rawCount)) || !Number.isSafeInteger(Number(rawCount)) || Number(rawCount) > 10000) throw new Error("生成数量必须是 1 到 10000 的整数。");
   const count = Number(rawCount);
   const input = String(rawDomain || "").trim().toLowerCase();
   const domain = domainToASCII(input);
-  if (!input || /[\s@/:?#\\]/.test(input) || !domain || domain.length > 253 || !domain.includes(".") || domain.split(".").some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) || domain.endsWith(".example")) throw new Error("请输入有效的自有邮箱域名，例如 jasonlat.cc，不要填写 @、网址或完整邮箱。");
+  if (!input || /[\s@/:?#\\]/.test(input) || !domain || domain.length > 253 || !domain.includes(".") || domain.split(".").some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) || domain.endsWith(".example")) throw new Error("请输入有效的自有邮箱域名，例如 example.com，不要填写 @、网址或完整邮箱。");
   const used = new Set([...excluded].map(normalizeEmail));
   const result = [];
   for (let attempt = 0; result.length < count && attempt < count * 20 + 100; attempt++) {
@@ -106,10 +115,23 @@ export function generateEmails(rawCount, rawDomain, excluded, makeLocal = () => 
   return result;
 }
 
-export async function appendGenerated(root, count, domain, state, profiles) {
+export async function appendGenerated(root, count, domain, state, profiles, {makeProfile = newProfile} = {}) {
   const view = await reconcileQueue(root, state);
-  const emails = generateEmails(count, domain, [...view.emails, ...view.completed, ...Object.keys(state), ...Object.keys(profiles)]);
+  const credentialsPath = resolve(root, ".local/account-credentials.json");
+  const existingProfiles = {...profiles, ...await readJSON(credentialsPath, {})};
+  const candidates = new Map();
+  const emails = generateEmails(count, domain, [...view.emails, ...view.completed, ...Object.keys(state), ...Object.keys(existingProfiles)], () => {
+    const profile = makeProfile();
+    const prefix = profileEmailPrefix(profile);
+    if (!candidates.has(prefix)) candidates.set(prefix, profile);
+    return prefix;
+  });
+  const generatedProfiles = Object.fromEntries(emails.map(email => [email, candidates.get(email.slice(0, email.indexOf("@")))]));
+  // Persist matching names, birthdays and passwords before publishing their addresses.
+  // If queue append fails, keep these records so retries cannot silently change identity.
+  await saveJSON(credentialsPath, {...existingProfiles, ...generatedProfiles});
   const before = view.files.find(file => file.path === view.queueFile)?.text ?? null;
   await replaceText(view.queueFile, before, appendLines(before, emails));
+  Object.assign(profiles, generatedProfiles);
   return {emails, queueFile: view.queueFile};
 }

@@ -109,7 +109,7 @@ export async function typeBirthdayField(index, expected) {
       let text = "";
       fill(text);
       for (const character of String(expected)) {
-        await pause(800);
+        await pause(500);
         if (!element.isConnected || touched || window.__cg2InputCancelled) return false;
         text += character;
         fill(text);
@@ -148,7 +148,7 @@ export async function prepareBirthday(browser, sessionId, job, {paced = false, s
       }
       if ((await inspect("focus", f.index)).kind !== "focused") return {kind: "unsupported"};
       for (const digit of f.expected) {
-        if (paced) await browser.evaluate(sessionId, "new Promise(resolve => setTimeout(resolve, 800))");
+        if (paced) await browser.evaluate(sessionId, "new Promise(resolve => setTimeout(resolve, 500))");
         checkStop();
         await key(digit, "Digit" + digit, 48 + Number(digit), digit);
       }

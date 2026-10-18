@@ -3,7 +3,7 @@ import test from "node:test";
 import {mkdtemp, readFile, writeFile, mkdir} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {appendGenerated, generateEmails, reconcileQueue} from "../queue-files.mjs";
+import {appendGenerated, generateEmails, profileEmailPrefix, reconcileQueue} from "../queue-files.mjs";
 import {readJSON, runSerial, saveJSON} from "../core.mjs";
 
 const fixture = () => mkdtemp(join(tmpdir(), "chatgpt2api-queue-files-"));
@@ -85,10 +85,48 @@ test("generation appends without erasing the queue or its comments and keeps gen
   const second = await appendGenerated(root, 100, "domain.test", state, profiles);
   const all = new Set([...first.emails, ...second.emails]);
   assert.equal(all.size, 200);
-  assert.ok([...all].every(email => /^user[0-9a-f]{16}@domain\.test$/.test(email)));
+  assert.ok([...all].every(email => /^[a-z]+\d{8}@domain\.test$/.test(email)));
+  const stored = await readJSON(join(root, ".local/account-credentials.json"));
+  for (const email of all) assert.equal(email, profileEmailPrefix(stored[email]) + "@domain.test");
+  assert.equal(stored["profile@domain.test"].name, "Test");
   assert.ok((await read(root, "accounts.txt")).startsWith("# keep this\r\nexisting@domain.test\r\n"));
   assert.equal((await reconcileQueue(root, state)).emails.length, 201);
   assert.equal(await read(root, "accounts-completed.txt"), "done@domain.test\n");
+});
+
+test("email prefix is the normalized full name and real YYYYMMDD birthday, without random suffixes", () => {
+  assert.equal(profileEmailPrefix({name: "Alex Miller", birth_date: "1996-05-17"}), "alexmiller19960517");
+  assert.equal(profileEmailPrefix({name: "Éva O'Neil", birth_date: "2000-02-29"}), "evaoneil20000229");
+  for (const profile of [{name: "", birth_date: "1996-05-17"}, {name: "Alex", birth_date: "2001-02-29"}, {name: "Alex", birth_date: "2000-13-01"}]) {
+    assert.throws(() => profileEmailPrefix(profile), /未写入队列/);
+  }
+});
+
+test("generation excludes stored profiles and historical mailboxes; saves and reuses the exact chosen profile", async () => {
+  const root = await fixture();
+  const alex = {name: "Alex Miller", birth_date: "1996-05-17", password: "synthetic-original"};
+  const eva = {name: "Eva Reed", birth_date: "1999-02-03", password: "synthetic-saved"};
+  const robin = {name: "Robin Gray", birth_date: "1990-12-01", password: "synthetic-final"};
+  await saveJSON(join(root, ".local/account-credentials.json"), {"alexmiller19960517@domain.test": alex});
+  const profiles = {};
+  const candidates = [alex, eva, {...eva, password: "must-not-replace-first-accepted"}, robin];
+  const result = await appendGenerated(root, 2, "domain.test", {}, profiles, {makeProfile: () => candidates.shift()});
+  assert.deepEqual(result.emails, ["evareed19990203@domain.test", "robingray19901201@domain.test"]);
+  const stored = await readJSON(join(root, ".local/account-credentials.json"));
+  assert.deepEqual(stored["alexmiller19960517@domain.test"], alex);
+  assert.deepEqual(stored[result.emails[0]], eva);
+  assert.deepEqual(stored[result.emails[1]], robin);
+  assert.deepEqual(profiles[result.emails[0]], eva);
+  await reconcileQueue(root, {});
+  assert.deepEqual(await readJSON(join(root, ".local/account-credentials.json")), stored);
+});
+
+test("failure to save matching profile never appends a new mailbox to the queue", async () => {
+  const root = await fixture();
+  await writeFile(join(root, "accounts.txt"), "existing@domain.test\n");
+  await mkdir(join(root, ".local", "account-credentials.json.tmp-" + process.pid), {recursive: true});
+  await assert.rejects(appendGenerated(root, 1, "domain.test", {}, {}));
+  assert.equal(await read(root, "accounts.txt"), "existing@domain.test\n");
 });
 
 test("empty or missing queue can be generated, and old successful status history is migrated first", async () => {

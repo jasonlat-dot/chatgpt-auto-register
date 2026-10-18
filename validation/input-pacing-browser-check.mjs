@@ -28,7 +28,7 @@ for (const sessionImport of [false, true]) {
     const second = result.trace.filter(item => item.field === names[1]);
     assert.ok(first[0].at >= 1900);
     assert.ok(first.length > 2);
-    assert.ok(first[1].at - first[0].at >= 750);
+    assert.ok(first[1].at - first[0].at >= 450);
     assert.ok(second[0].at - first.at(-1).at >= 950);
     assert.ok(result.clickedAt - second.at(-1).at >= 1950);
     console.log("PASS: " + (sessionImport ? "Session login" : "OAuth profile") + " waits for the page, types incrementally, pauses between fields and waits before Continue; synthetic requests only.");
