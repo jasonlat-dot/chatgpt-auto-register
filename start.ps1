@@ -124,7 +124,7 @@ try {
     'Plan' { & $taskNode.Source --use-env-proxy './runner.mjs' --plan }
     'Generate' {
       if (-not $Count) { $Count = (Read-Host '请输入生成数量（1 到 10000）').Trim() }
-      if (-not $Domain) { $Domain = (Read-Host '请输入自有邮箱域名，例如 jasonlat.cc').Trim() }
+      if (-not $Domain) { $Domain = (Read-Host '请输入自有邮箱域名，例如 example.com').Trim() }
       & $taskNode.Source --use-env-proxy './runner.mjs' --generate $Count --domain $Domain
     }
     'Browser' {

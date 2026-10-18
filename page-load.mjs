@@ -30,7 +30,7 @@ export async function waitForPageLoaded(inspect, {timeoutMs = 30000, stableMs = 
   return false;
 }
 
-export async function closeAccountBrowser(page, browser, {notify = console.log, timeoutMs = 30000, confirmedImport = false} = {}) {
+export async function closeAccountBrowser(page, browser, {notify = console.log, timeoutMs = 30000, confirmedImport = false, pause = sleep} = {}) {
   if (browser?.isClosed?.()) return;
   const retain = async message => {
     try {if (browser?.detach) await browser.detach();} catch {}
@@ -46,6 +46,14 @@ export async function closeAccountBrowser(page, browser, {notify = console.log, 
     try {loaded = await page.waitUntilLoaded({timeoutMs});} catch {}
     if (!loaded) {
       await retain("页面仍在加载或无法确认加载完成，已保留浏览器窗口并停止队列；请查看页面后手动关闭窗口。");
+    }
+    if (confirmedImport) {
+      for (let seconds = 3; seconds > 0; seconds--) {
+        try {await page.setCloseCountdown?.(seconds);}
+        catch {await retain("后端已确认导入，但完成页状态发生变化，已保留浏览器并停止队列；请手动检查窗口。");}
+        notify("后端已确认导入，" + seconds + " 秒后关闭浏览器…");
+        await pause(1000);
+      }
     }
     try {await page.close();}
     catch {await retain("无法确认当前页面已关闭，已保留浏览器并停止队列；请手动检查窗口。");}

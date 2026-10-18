@@ -167,10 +167,14 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
     async waitUntilLoaded(options) {return waitForPageLoaded(loadState, options);},
     async showImportComplete() {
       if (!callback) return false;
-      const html = '<!doctype html><meta charset="utf-8"><title>导入已确认</title><body style="font-family:system-ui;padding:48px;line-height:1.8"><h1>后端已确认导入</h1><p>本次 OAuth 授权与导入已完成。页面加载稳定后将关闭窗口。</p></body>';
+      const html = '<!doctype html><meta charset="utf-8"><title>导入已确认</title><body style="font-family:system-ui;padding:48px;line-height:1.8"><h1>后端已确认导入</h1><p>本次 OAuth 授权与导入已完成。</p><p id="close-countdown">页面加载稳定后，将倒计时 3 秒关闭窗口。</p></body>';
       loading = true;
       await browser.send("Page.navigate", {url: "data:text/html;charset=utf-8," + encodeURIComponent(html)}, sessionId);
       return true;
+    },
+    async setCloseCountdown(seconds) {
+      const updated = await browser.evaluate(sessionId, '(() => {const message = document.getElementById("close-countdown"); if (!message) return false; message.textContent = ' + JSON.stringify(seconds + " 秒后关闭窗口…") + '; return true;})()');
+      if (!updated) throw new Error("完成页已变化，无法显示关闭倒计时。");
     },
     async readSession() {
       if (!sessionImport) throw new Error("当前页面未启用 Session 导入。");

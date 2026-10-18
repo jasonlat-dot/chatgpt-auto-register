@@ -44,12 +44,12 @@ test("normal cleanup waits for page readiness before closing the page and browse
   assert.deepEqual(events, ["ready", "page-closed", "browser-closed"]);
 });
 
-test("OAuth completion page is displayed only after a confirmed import and still waits for readiness", async () => {
+test("confirmed OAuth import loads its completion page then counts down three seconds before closing; other outcomes do not wait", async () => {
   for (const confirmedImport of [false, true]) {
     const events = [];
-    await closeAccountBrowser({showImportComplete: async () => events.push("completion"), waitUntilLoaded: async () => {events.push("ready"); return true;}, close: async () => events.push("closed")},
-      {close: async () => {}}, {notify: () => {}, confirmedImport});
-    assert.deepEqual(events, confirmedImport ? ["completion", "ready", "closed"] : ["ready", "closed"]);
+    await closeAccountBrowser({showImportComplete: async () => events.push("completion"), waitUntilLoaded: async () => {events.push("ready"); return true;}, setCloseCountdown: async seconds => events.push(seconds), close: async () => events.push("closed")},
+      {close: async () => {}}, {notify: () => {}, confirmedImport, pause: async ms => events.push("wait:" + ms)});
+    assert.deepEqual(events, confirmedImport ? ["completion", "ready", 3, "wait:1000", 2, "wait:1000", 1, "wait:1000", "closed"] : ["ready", "closed"]);
   }
 });
 
