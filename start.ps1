@@ -190,18 +190,43 @@ try {
       }
       if ($taskPreflightView.held_count -gt 0) { Write-Host ('另有 ' + $taskPreflightView.held_count + ' 个历史账号未重试，可在菜单 8 查看原因和重新排队。') }
 
-      if (-not $env:CHATGPT2API_ADMIN_KEY) {
-        $taskSecret = Read-Host '请输入 ChatGPT2API 管理员密钥（输入内容隐藏）' -AsSecureString
-        $taskPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($taskSecret)
-        try { $env:CHATGPT2API_ADMIN_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($taskPointer) }
-        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($taskPointer) }
+      if ($taskConfig.chatgpt2api_admin_key -is [string] -and $taskConfig.chatgpt2api_admin_key.Trim()) {
+        $env:CHATGPT2API_ADMIN_KEY = $taskConfig.chatgpt2api_admin_key.Trim()
       }
       $taskBrowserArgs = @()
       if ($BrowserMode) { $taskBrowserArgs = @('--browser-mode', $BrowserMode) }
-      if ($Mode -eq 'Manual') {
-        & $taskNode.Source --use-env-proxy './runner.mjs' --run --manual-codes @taskBrowserArgs
-      } else {
-        & $taskNode.Source --use-env-proxy './runner.mjs' --run @taskBrowserArgs
+      while ($true) {
+        $taskSaveInput = $false
+        if (-not $env:CHATGPT2API_ADMIN_KEY) {
+          $taskSecret = Read-Host '请输入 ChatGPT2API 管理员密钥（输入隐藏；验证通过后保存到本机 config.json；空输入取消）' -AsSecureString
+          $taskPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($taskSecret)
+          try { $env:CHATGPT2API_ADMIN_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($taskPointer).Trim() }
+          finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($taskPointer) }
+          if (-not $env:CHATGPT2API_ADMIN_KEY) { Write-Host '已取消，配置未改变。'; return }
+          $taskSaveInput = $true
+        }
+        $taskAuthArgs = @('--check-admin-key', '--candidate-env')
+        if ($taskSaveInput) { $taskAuthArgs += '--save-admin-key' }
+        & $taskNode.Source --use-env-proxy './runner.mjs' @taskAuthArgs
+        $taskAuthResult = $LASTEXITCODE
+        if ($taskAuthResult -in @(23, 24)) {
+          Write-Host '密钥未通过管理员认证，请重新输入；错误的输入不会保存。' -ForegroundColor Yellow
+          $env:CHATGPT2API_ADMIN_KEY = $null
+          continue
+        }
+        if ($taskAuthResult -ne 0) { throw '无法验证后端密钥。请检查服务地址、网络或上方提示；未将网络错误当作密钥错误。' }
+        if ($Mode -eq 'Manual') {
+          & $taskNode.Source --use-env-proxy './runner.mjs' --run --manual-codes @taskBrowserArgs
+        } else {
+          & $taskNode.Source --use-env-proxy './runner.mjs' --run @taskBrowserArgs
+        }
+        $taskQueueResult = $LASTEXITCODE
+        if ($taskQueueResult -in @(23, 24)) {
+          Write-Host '运行中后端密钥失效，请更新密钥后继续；兑换结果待核对的账号不会自动重试。' -ForegroundColor Yellow
+          $env:CHATGPT2API_ADMIN_KEY = $null
+          continue
+        }
+        break
       }
     }
   }

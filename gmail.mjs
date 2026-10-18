@@ -8,7 +8,7 @@ export async function jsonRequest(url, options = {}) {
   let response;
   try {response = await fetch(url, {...options, redirect: "error", signal: AbortSignal.timeout(options.timeout || 30000)});}
   catch {throw new Error("网络请求失败或超时；请检查代理和网络连接。");}
-  if (!response.ok) throw new Error("接口返回 HTTP " + response.status + "；请检查授权/凭据。未输出含敏感信息的响应内容。");
+  if (!response.ok) throw Object.assign(new Error("接口返回 HTTP " + response.status + "；请检查授权/凭据。未输出含敏感信息的响应内容。"), {status: response.status});
   return response.json();
 }
 export class Gmail {

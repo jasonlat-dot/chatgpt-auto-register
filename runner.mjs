@@ -9,6 +9,7 @@ import {resolveCodeFailure} from "./failure-choice.mjs";
 import {launchBrowser, newAccountPage} from "./browser.mjs";
 import {driveAccount, summarizeRun, printSummary} from "./account-flow.mjs";
 import {profileForAccount, readBrowserMode, saveBrowserMode} from "./browser-mode.mjs";
+import {ADMIN_AUTH_EXIT, ADMIN_KEY_MISSING_EXIT, adminAuthError, apiBase, configuredAdminKey, saveAdminKey, verifyAdminKey} from "./admin-auth.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const local = resolve(root, ".local");
@@ -28,6 +29,18 @@ async function main() {
   const unlock = await acquireLock(resolve(local, "queue.lock"));
   let browser;
   try {
+    if (process.argv.includes("--check-admin-key")) {
+      const path = resolve(root, "config.json");
+      const config = await readJSON(path);
+      const base = apiBase(config);
+      const key = configuredAdminKey(config, process.env.CHATGPT2API_ADMIN_KEY, process.argv.includes("--candidate-env"));
+      await verifyAdminKey(base, key);
+      if (process.argv.includes("--save-admin-key")) {
+        await saveAdminKey(path, key, base);
+        console.log("管理员密钥验证通过，已保存到本机 config.json（Git 忽略，不上传）。");
+      } else console.log("ChatGPT2API 管理员密钥验证通过。");
+      return;
+    }
     if (process.argv.includes("--set-browser-mode")) {
       const mode = process.argv[process.argv.indexOf("--set-browser-mode") + 1];
       await saveBrowserMode(local, mode);
@@ -89,11 +102,13 @@ async function main() {
       return;
     }
     if (!process.argv.includes("--run")) throw new Error("请选择 --plan、--gmail-login、--run、--retry 邮箱或 --generate 数量 --domain 域名。");
-    const key = process.env.CHATGPT2API_ADMIN_KEY;
-    if (!key) throw new Error("请通过 start.ps1 Queue 输入项目管理员密钥，或设置 CHATGPT2API_ADMIN_KEY 环境变量。");
-    const base = new URL(config.api_base_url || "http://127.0.0.1:3000");
-    if (!["http:", "https:"].includes(base.protocol) || (base.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(base.hostname)) || base.username || base.password || base.search || base.hash || base.pathname !== "/") throw new Error("api_base_url 必须是本机 HTTP 地址或你的 HTTPS 服务根地址。");
-    const api = (path, body, timeout = 30000) => jsonRequest(new URL(path, base), {method: "POST", headers: {"content-type": "application/json", authorization: "Bearer " + key}, body: JSON.stringify(body), timeout});
+    const key = configuredAdminKey(config, process.env.CHATGPT2API_ADMIN_KEY);
+    const base = apiBase(config);
+    await verifyAdminKey(base, key);
+    const api = async (path, body, timeout = 30000) => {
+      try {return await jsonRequest(new URL(path, base), {method: "POST", headers: {"content-type": "application/json", authorization: "Bearer " + key}, body: JSON.stringify(body), timeout});}
+      catch (error) {if ([401, 403].includes(error.status)) throw adminAuthError(); throw error;}
+    };
     const automatic = !process.argv.includes("--manual-codes");
     const reader = new CodeReader(gmail, {manual: !automatic, failurePolicy: automatic ? "skip" : "dialog", waitSeconds: config.auto_code_wait_seconds ?? 60});
     const gmailProfile = await reader.connect();
@@ -160,5 +175,9 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(error => {console.error("暂停：" + error.message); process.exitCode = 1;});
+  main().catch(error => {
+    const expectedAuthFailure = ["ADMIN_AUTH_REJECTED", "ADMIN_KEY_MISSING"].includes(error.code);
+    (expectedAuthFailure ? console.log : console.error)("暂停：" + error.message);
+    process.exitCode = error.code === "ADMIN_AUTH_REJECTED" ? ADMIN_AUTH_EXIT : error.code === "ADMIN_KEY_MISSING" ? ADMIN_KEY_MISSING_EXIT : 1;
+  });
 }

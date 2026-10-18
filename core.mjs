@@ -100,7 +100,7 @@ export async function runSerial(emails, state, save, execute, shouldStop = () =>
       if (error.outcome) {
         result = error.outcome;
       } else {
-        state[email] = {...state[email], status: error.submitted ? "unknown_after_submit" : "stopped", reason: String(error.message || "当前账号执行失败").slice(0, 500), updated_at: new Date().toISOString()};
+        state[email] = {...state[email], status: error.submitted ? "unknown_after_submit" : error.code === "ADMIN_AUTH_REJECTED" ? "pending" : "stopped", reason: String(error.message || "当前账号执行失败").slice(0, 500), updated_at: new Date().toISOString()};
         await save(state);
         if (continueOnError && !error.fatal && !shouldStop()) continue;
         throw error;
