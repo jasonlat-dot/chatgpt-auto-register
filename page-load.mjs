@@ -39,7 +39,7 @@ export async function closeAccountBrowser(page, browser, {notify = console.log, 
   if (page) {
     if (confirmedImport && page.showImportComplete) {
       try {await page.showImportComplete();}
-      catch {await retain("后端已确认导入，但完成页无法显示，已保留浏览器并停止队列；请手动检查窗口。");}
+      catch {await retain("后端已确认导入，但结果提示无法显示，已保留浏览器并停止队列；请手动检查窗口。");}
     }
     notify("关闭前检查：等待页面加载完成并稳定…");
     let loaded = false;
@@ -50,7 +50,7 @@ export async function closeAccountBrowser(page, browser, {notify = console.log, 
     if (confirmedImport) {
       for (let seconds = 3; seconds > 0; seconds--) {
         try {await page.setCloseCountdown?.(seconds);}
-        catch {await retain("后端已确认导入，但完成页状态发生变化，已保留浏览器并停止队列；请手动检查窗口。");}
+        catch {await retain("后端已确认导入，但页面状态发生变化，已保留浏览器并停止队列；请手动检查窗口。");}
         notify("后端已确认导入，" + seconds + " 秒后关闭浏览器…");
         await pause(1000);
       }

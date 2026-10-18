@@ -1,13 +1,14 @@
 import {spawn} from "node:child_process";
 import {readFile, mkdir, unlink} from "node:fs/promises";
 import {resolve} from "node:path";
-import {sleep, validatedCallback} from "./core.mjs";
+import {sleep} from "./core.mjs";
 import {validateBrowserMode} from "./browser-mode.mjs";
 import {prepareBirthday} from "./birthday.mjs";
 import {browserSessionProbe, sessionLandingStep} from "./session-import.mjs";
 import {waitForStablePage} from "./page-timing.mjs";
 import {pageLoadSnapshot, waitForPageLoaded} from "./page-load.mjs";
 import {findChrome, chromeArguments} from "./browser-launch.mjs";
+import {isOfficialCallback, callbackAfterNavigation} from "./official-callback.mjs";
 
 export async function launchBrowser(profile, proxy = "", headless = false, mode = "incognito") {
   validateBrowserMode(mode);
@@ -125,9 +126,23 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
   signal?.addEventListener("abort", abortInput, {once: true});
   let loading = false;
   let mainFrameId;
+  let callback = null;
+  let callbackError = null;
+  let callbackCandidate = null;
+  let callbackTask;
+  let finishCallbackNavigation;
   const navigationListener = message => {
     if (message.sessionId !== sessionId) return;
-    if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {mainFrameId = message.params.frame.id; loading = true;}
+    if (!sessionImport && message.method === "Network.requestWillBeSent" && message.params.type === "Document" &&
+      (!mainFrameId || message.params.frameId === mainFrameId) && isOfficialCallback(message.params.request.url)) {
+      // Keep only the in-memory URL; allow the request to reach the official server.
+      callbackCandidate ??= message.params.request.url;
+    }
+    if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {
+      mainFrameId = message.params.frame.id; loading = true;
+      if (!sessionImport && isOfficialCallback(message.params.frame.url)) callbackCandidate ??= message.params.frame.url;
+      if (callbackCandidate && !callbackTask && finishCallbackNavigation) callbackTask = finishCallbackNavigation();
+    }
     if (message.method === "Page.frameStartedLoading" && (!mainFrameId || message.params.frameId === mainFrameId)) loading = true;
     if (message.method === "Page.frameStoppedLoading" && (!mainFrameId || message.params.frameId === mainFrameId)) loading = false;
     if (message.method === "Page.loadEventFired") loading = false;
@@ -142,22 +157,12 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
     const state = await browser.evaluate(sessionId, "(" + pageLoadSnapshot.toString() + ")()");
     return {...state, ready: !!state?.ready && !loading};
   };
-  let callback = null;
-  let callbackError = null;
-  const listener = message => {
-    if (message.sessionId !== sessionId || message.method !== "Fetch.requestPaused") return;
-    void (async () => {
-      const {requestId, request} = message.params;
-      if (!request.url.startsWith("https://platform.openai.com/auth/callback")) return;
-      // This happens at Request stage, before Platform can receive/redeem the code.
-      await browser.send("Fetch.failRequest", {requestId, errorReason: "Aborted"}, sessionId);
-      try {callback = validatedCallback(request.url, expectedState);} catch (error) {callbackError = error;}
-    })().catch(() => {callbackError = new Error("回调拦截失败，队列已暂停。");});
+  finishCallbackNavigation = async () => {
+    try {
+      callback = await callbackAfterNavigation(callbackCandidate, expectedState, options => waitForPageLoaded(loadState, options), {signal, isClosed: () => !!browser.isClosed?.()});
+    } catch (error) {callbackError = error;}
   };
-  if (!sessionImport) {
-    browser.listeners.add(listener);
-    await browser.send("Fetch.enable", {patterns: [{urlPattern: "https://platform.openai.com/auth/callback*", requestStage: "Request", resourceType: "Document"}]}, sessionId);
-  }
+  if (!sessionImport) await browser.send("Network.enable", {}, sessionId);
   return {
     sessionId,
     get callback() {if (callbackError) throw callbackError; return callback;},
@@ -169,10 +174,7 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
     async waitUntilLoaded(options) {return waitForPageLoaded(loadState, options);},
     async showImportComplete() {
       if (!callback) return false;
-      const html = '<!doctype html><meta charset="utf-8"><title>导入已确认</title><body style="font-family:system-ui;padding:48px;line-height:1.8"><h1>后端已确认导入</h1><p>本次 OAuth 授权与导入已完成。</p><p id="close-countdown">页面加载稳定后，将倒计时 3 秒关闭窗口。</p></body>';
-      loading = true;
-      await browser.send("Page.navigate", {url: "data:text/html;charset=utf-8," + encodeURIComponent(html)}, sessionId);
-      return true;
+      return browser.evaluate(sessionId, '(() => {const notice = document.createElement("aside"); notice.style.cssText="position:fixed;bottom:24px;right:24px;z-index:2147483647;background:#fff;color:#111;border:1px solid #ccc;border-radius:12px;padding:20px;font:16px system-ui"; const heading = document.createElement("strong"); heading.textContent="后端已确认导入"; const countdown = document.createElement("p"); countdown.id="close-countdown"; countdown.textContent="页面稳定后，倒计时 3 秒关闭窗口。"; notice.append(heading,countdown); document.body.append(notice); return true;})()');
     },
     async setCloseCountdown(seconds) {
       const updated = await browser.evaluate(sessionId, '(() => {const message = document.getElementById("close-countdown"); if (!message) return false; message.textContent = ' + JSON.stringify(seconds + " 秒后关闭窗口…") + '; return true;})()');
@@ -184,6 +186,7 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
       return browser.evaluate(sessionId, "(" + browserSessionProbe.toString() + ")()");
     },
     async step(job, code = "") {
+      if (callbackCandidate || callbackTask || callback || callbackError) return {kind: "loading"};
       if (!(await loadState()).ready) return {kind: "loading"};
       if (actionDelayMs && !(await waitForStablePage(browser, sessionId, actionDelayMs, {signal}))) return {kind: "loading"};
       if (signal?.aborted) throw new Error("用户已停止当前任务。");
@@ -203,7 +206,6 @@ export async function newAccountPage(browser, expectedState, {sessionImport = fa
     async close() {
       signal?.removeEventListener("abort", abortInput);
       browser.listeners.delete(navigationListener);
-      browser.listeners.delete(listener);
       if (browserContextId) await browser.send("Target.disposeBrowserContext", {browserContextId});
       else await browser.send("Target.closeTarget", {targetId});
     },

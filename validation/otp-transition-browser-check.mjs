@@ -10,6 +10,7 @@ const browser = await launchBrowser(resolve(import.meta.dirname, "../.local/prof
 let page;
 let route;
 let routeError;
+let callbackRequestedAt;
 const state = "chatgpt2api-synthetic-profile-transition";
 const callback = "https://platform.openai.com/auth/callback?code=synthetic&state=" + state;
 try {
@@ -31,7 +32,12 @@ try {
   route = message => {
     if (message.sessionId !== page.sessionId || message.method !== "Fetch.requestPaused") return;
     const {requestId, request} = message.params;
-    if (request.url.startsWith("https://platform.openai.com/auth/callback")) return;
+    if (request.url.startsWith("https://platform.openai.com/auth/callback")) {
+      callbackRequestedAt = Date.now();
+      const response = '<!doctype html><meta charset=utf-8><title>Official callback fixture</title><div role=progressbar>Loading</div><script>setTimeout(()=>document.body.innerHTML="<p>Official page loaded</p>",3000);</script>';
+      void browser.send("Fetch.fulfillRequest", {requestId, responseCode: 200, responseHeaders: [{name: "Content-Type", value: "text/html; charset=utf-8"}], body: Buffer.from(response).toString("base64")}, page.sessionId);
+      return;
+    }
     const known = request.url === "https://auth.openai.com/fixture-profile";
     if (!known && !request.url.endsWith("favicon.ico")) routeError = new Error("Unexpected request blocked");
     void browser.send("Fetch.fulfillRequest", {requestId, responseCode: known ? 200 : 404,
@@ -45,7 +51,12 @@ try {
   const result = await driveAccount({page, job: {email: "owned@domain.test", name: "Synthetic User", age: 30, birth_date: "1996-01-01"},
     guard: {since: began}, used: new Set(), started: {expires_in: 600}, beforeSubmitDelayMs: 1000, notify: () => {},
     reader: {manual: false, pendingFailure: null, resetWait() {}, read: async () => ({id: "synthetic-mail", code: "123456"})},
-    finish: async value => {assert.equal(value, callback); imports++; return {added: 1, skipped: 0};}});
+    finish: async value => {
+      assert.equal(value, callback);
+      assert.ok(Date.now() - callbackRequestedAt >= 4900);
+      assert.equal(await browser.evaluate(page.sessionId, "document.title"), "Official callback fixture");
+      imports++; return {added: 1, skipped: 0};
+    }});
   if (routeError) throw routeError;
   assert.deepEqual(result, {warning: false});
   assert.ok(Date.now() - began >= 23000);
@@ -53,12 +64,12 @@ try {
   const waitUntilLoaded = page.waitUntilLoaded.bind(page);
   page.waitUntilLoaded = async options => {
     const ready = await waitUntilLoaded(options);
-    assert.equal(await browser.evaluate(page.sessionId, "document.title"), "导入已确认");
+    assert.equal(await browser.evaluate(page.sessionId, "document.title"), "Official callback fixture");
     return ready;
   };
   await closeAccountBrowser(page, browser, {confirmedImport: true, notify: () => {}});
   page = undefined;
-  console.log("PASS: real isolated Edge retries a delayed/rebuilt OTP button, submits profile, waits through a 20-second spinner, captures callback before network, waits one second and imports once; no real service access.");
+  console.log("PASS: isolated Chrome retries a rebuilt OTP field, submits profile, waits for the destination callback page and its spinner to settle, imports once and keeps the destination page during countdown; synthetic requests only.");
 } finally {
   if (route) browser.listeners.delete(route);
   if (page) await page.close();

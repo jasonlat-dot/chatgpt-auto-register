@@ -42,9 +42,8 @@ test("ordinary page uses default browser context; private page creates and dispo
     const page = await newAccountPage(browser, "chatgpt2api-test.state");
     const target = calls.find(call => call.method === "Target.createTarget");
     assert.equal(target.params.browserContextId, mode === "incognito" ? "private-id" : undefined);
-    const fetch = calls.find(call => call.method === "Fetch.enable");
-    assert.equal(fetch.params.patterns[0].requestStage, "Request");
-    assert.equal(fetch.params.patterns[0].urlPattern, "https://platform.openai.com/auth/callback*");
+    assert.ok(calls.some(call => call.method === "Network.enable"));
+    assert.ok(!calls.some(call => call.method.startsWith("Fetch.")));
     await page.close();
     assert.equal(browser.listeners.size, 0);
     assert.equal(calls.at(-1).method, mode === "incognito" ? "Target.disposeBrowserContext" : "Target.closeTarget");

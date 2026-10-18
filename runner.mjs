@@ -120,7 +120,7 @@ async function main() {
     console.log("并发数固定为 1。注册资料、密码保存于 .local/account-credentials.json。Ctrl+C 停止队列。");
     console.log("导入方式：" + (sessionImport ? "Session JSON（登录 ChatGPT 后读取，仅导入 accessToken）" : "OAuth（获取可续期凭据）") + "。");
     console.log("页面操作前固定等待 2 秒；文本每字 500 毫秒输入，字段之间和点击继续前各等待 1 秒。");
-    if (!sessionImport) console.log("OAuth 拿到回调后等待 1 秒再提交后端；确认导入并加载完成页后倒计时 3 秒关闭。");
+    if (!sessionImport) console.log("OAuth 允许官方正常跳转；页面稳定后提取 code，等待 1 秒再提交后端。官方可能已兑换 code；确认导入后在原页面倒计时 3 秒关闭。");
     const modeIndex = process.argv.indexOf("--browser-mode");
     const browserMode = await readBrowserMode(local, modeIndex < 0 ? undefined : process.argv[modeIndex + 1] || "");
     console.log("浏览器：Google Chrome；模式：" + (browserMode === "normal" ? "普通窗口；每个邮箱使用自己的浏览器资料。" : "原生无痕窗口（--incognito）；每个账号使用全新会话。"));
@@ -153,7 +153,10 @@ async function main() {
           await page.navigate(sessionImport ? "https://chatgpt.com/auth/login" : started.authorize_url);
           const accountOptions = {page, job, reader, guard, used, started, automatic, signal: stopController.signal};
           outcome = sessionImport ? await driveSessionAccount({...accountOptions, api}) : await driveAccount({...accountOptions, beforeSubmitDelayMs: 1000,
-            finish: callback => api("/api/accounts/oauth/finish", {session_id: started.session_id, callback}, 180000)});
+            finish: async callback => {
+              try {return await api("/api/accounts/oauth/finish", {session_id: started.session_id, callback}, 180000);}
+              catch (error) {error.message += "；本次允许官方处理回调，code 可能已被兑换。请核对账号池，不要重复提交旧 code。"; throw error;}
+            }});
           return outcome;
         }
         catch (error) {primaryError = error; throw error;}

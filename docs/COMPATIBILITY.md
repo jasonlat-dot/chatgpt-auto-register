@@ -17,9 +17,11 @@
 
 脚本调用后端的 `POST /api/accounts/oauth/start` 和 `POST /api/accounts/oauth/finish`，使用后端的管理员密钥认证。启动响应必须包含 `session_id`、`authorize_url`，授权参数的 `state` 以 `chatgpt2api-` 开头。
 
-此流程保留 Platform 的授权入口 `/api/accounts/authorize`、公开客户端 ID `app_2SKx67EdpoN0G6j64rFvigXD` 和原始回调 `https://platform.openai.com/auth/callback`。自动化浏览器在回调请求发出前通过 CDP 拦截，再交给后端兑换。不是等网页加载后修改地址，也不是复用已经兑换过的 code。
+此流程保留 Platform 的授权入口 `/api/accounts/authorize`、公开客户端 ID `app_2SKx67EdpoN0G6j64rFvigXD` 和原始回调 `https://platform.openai.com/auth/callback`。当前版本按用户需求允许官方回调请求正常执行，只观察主文档请求/导航，在内存保留回调地址。等跳转后的官方页面加载稳定后，才校验 code/state 并向后端兑换，不替换回调响应，也不提供本地回调页。
 
-普通和无痕模式的回调拦截都由程序完成，不需要额外安装扩展，也不需要在这个浏览器中打开 chatgpt2api 网页。手动浏览器使用扩展的旧流程是另一种使用方式；本仓库不要求安装它。
+允许官方处理回调意味着 code 可能已经被官方兑换。页面稳定后交给后端并不保证还能兑换；此行为与此前“发请求前拦截”的版本不同。提交失败保留待核对记录，不自动重试旧 code。导入成功后的倒计时在原官方页面提示，不另跳本地完成页。
+
+普通和无痕模式均由程序观察导航，不需要额外安装扩展，也不需要在这个浏览器中打开 chatgpt2api 网页。手动浏览器使用扩展的旧流程是另一种使用方式；本仓库不要求安装它。
 
 ## Session JSON 模式
 

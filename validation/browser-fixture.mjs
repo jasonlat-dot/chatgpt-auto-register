@@ -14,6 +14,9 @@ try {
     if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused" && message.params.request.url.startsWith("https://auth.openai.com/fixture")) {
       void browser.send("Fetch.fulfillRequest", {requestId: message.params.requestId, responseCode: 200, responseHeaders: [{name: "Content-Type", value: "text/html; charset=utf-8"}], body: Buffer.from(fixture).toString("base64")}, page.sessionId);
     }
+    if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused" && message.params.request.url.startsWith("https://platform.openai.com/auth/callback")) {
+      void browser.send("Fetch.fulfillRequest", {requestId: message.params.requestId, responseCode: 200, responseHeaders: [{name: "Content-Type", value: "text/html; charset=utf-8"}], body: Buffer.from('<!doctype html><title>Official destination fixture</title><p>Loaded</p>').toString("base64")}, page.sessionId);
+    }
   };
   browser.listeners.add(route);
   await browser.send("Fetch.enable", {patterns: [{urlPattern: "https://auth.openai.com/fixture*", requestStage: "Request"}, {urlPattern: "https://platform.openai.com/auth/callback*", requestStage: "Request", resourceType: "Document"}]}, page.sessionId);
@@ -36,6 +39,6 @@ try {
   assert.equal(page.callback, "https://platform.openai.com/auth/callback?code=synthetic_not_real&state=" + state);
   browser.listeners.delete(route);
   await page.close();
-  console.log("PASS (" + mode + "): isolated real Edge, mocked registration form, profile fields, real keyboard manual OTP, delayed automatic code cannot overwrite manual input, manual submit resumes pre-request callback capture. No actual signup or email access.");
+  console.log("PASS (" + mode + "): isolated Chrome, synthetic profile fields and manual OTP protection, callback exposed only after the destination loads. No actual signup or email access.");
 } finally {await browser.close();}
 }
